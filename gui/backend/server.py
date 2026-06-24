@@ -25,19 +25,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import fcntl
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Body, UploadFile, File, Form, Response, Cookie, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -168,9 +165,6 @@ class NewSessionResponse(BaseModel):
     prepared and ADAM has been spawned. The session_id can be used
     immediately to open an SSE event stream; the GUI will see events
     once ADAM completes its startup (~5-15 seconds).
-
-    Resume responses reuse this shape: approve/redirect set session_id
-    to the child; decline sets declined=True and session_id to the parent.
     """
     session_id:    str
     started_at:    str
@@ -178,11 +172,7 @@ class NewSessionResponse(BaseModel):
     session_dir:   str
     seed_path:     str
     context_files: List[str]    # filenames placed in input_context/
-    status:        str          # "starting" | "review_resolved"
-    parent_session_id: Optional[str] = None
-    review_decision: Optional[str] = None
-    review_resolved_at: Optional[str] = None
-    declined: bool = False
+    status:        str          # "starting"
 
 
 # v5 multi-user auth models
@@ -209,6 +199,25 @@ class WhoamiResponse(BaseModel):
     skills_denied:          List[str]      # for the frontend to grey-out controls
     governance_profile:     Optional[str] = None   # assigned profile (pilots)
     governance_profile_locked: bool = False        # True when server enforces assignment
+
+
+# Request body for assigning/clearing a user's governance profile.
+# MUST be module-level: a Pydantic request-body model defined inside a
+# function (nested/local scope) is not recognized by FastAPI as a body
+# model — FastAPI falls back to treating the parameter as a QUERY param,
+# producing 422 errors with loc ["query","body"]. Keep all request-body
+# models at module scope.
+class UserGovernanceProfileUpdate(BaseModel):
+    governance_profile: Optional[str] = None   # None/"" => reset to role default
+
+
+# Request body for an admin override of a Truthseeker verdict. Module-level
+# for the same reason as above (nested body models break FastAPI parsing).
+class VerificationOverrideBody(BaseModel):
+    claim_id: str
+    status:   str
+    reason:   str
+    feedback: Optional[str] = None
 
 
 # ============================================================
@@ -363,9 +372,6 @@ def spawn_adam_session(
     governance_profile_id: Optional[str] = None,
     resume_after_review: bool = False,
     resume_after_information: bool = False,
-    resumed_from_review: bool = False,
-    review_decision: Optional[str] = None,
-    review_resolved_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Part 9 / v5 multi-user: prepare a session directory and spawn ADAM.
@@ -403,23 +409,7 @@ def spawn_adam_session(
     has been created. The session_dir is intentionally LEFT IN PLACE
     on error -- it serves as the audit record of the failed start, and
     the user can see the partial files plus the stderr log.
-
-  Governance (fail-closed for protected profiles): resolution runs
-  before any session directory is created. Non-protected profiles
-  (``standard`` bounds) keep permissive fallbacks; protected profiles
-  refuse spawn when config or bounds cannot be resolved.
     """
-    # Step 0: governance resolution. Protected profiles (non-standard
-    # policy bounds) must resolve from config — never spawn permissively.
-    try:
-        resolved_profile_id, _bounds, _profile = governance.resolve_spawn_governance(
-            governance_profile_id
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except governance.GovernanceResolutionError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
     # Step 1: session_id. Use a UUID so it's collision-free across
     # concurrent submissions and clearly distinct from user input.
     session_id = str(uuid.uuid4())
@@ -513,6 +503,7 @@ def spawn_adam_session(
     # permit it. This is computed HERE, in one place, so both the fresh
     # and continuation spawn paths get identical enforcement -- there is
     # no second, separate policy filter elsewhere.
+    resolved_profile_id = governance.resolve_profile_id(governance_profile_id)
     skill_universe = _discover_skill_universe(adam_root)
     policy_denied = governance.policy_denied_skills(resolved_profile_id, skill_universe)
     effective_denied = sorted(set(disable_skills or []) | set(policy_denied))
@@ -520,15 +511,32 @@ def spawn_adam_session(
     for skill_name in effective_denied:
         cmd += ["--disable-skill", skill_name]
 
-    # Slice 3/4a: pass resolved bounds + review settings to the subprocess.
-    # Protected profiles already failed closed above if resolution failed;
-    # non-protected profiles may use permissive fallbacks from step 0.
-    _bounds["human_review_mode"] = _profile.get("human_review_mode", "none")
-    _bounds["review_required_for"] = _profile.get("review_required_for", [])
-    cmd += [
-        "--governance-profile-id", resolved_profile_id,
-        "--policy-bounds", json.dumps(_bounds, separators=(",", ":")),
-    ]
+    # Slice 3: the deliberation subprocess needs its policy bounds at
+    # RUNTIME (not just at spawn) so the post-synthesis policy gate can
+    # check the planned Operator action before it runs. We resolve the
+    # bounds here (one place) and pass them to the subprocess as a compact
+    # JSON arg, so governance.json parsing stays entirely in the backend.
+    try:
+        _bounds = dict(governance.get_policy_bounds(resolved_profile_id))
+        # Slice 4a: fold the profile's human-review settings into the same
+        # object so the subprocess's review gate sees them alongside the
+        # policy bounds. These come from the PROFILE (Slice 1 data model),
+        # not the bounds ruleset, so merge them in here.
+        try:
+            _profile = governance.get_profile(resolved_profile_id)
+            _bounds["human_review_mode"] = _profile.get("human_review_mode", "none")
+            _bounds["review_required_for"] = _profile.get("review_required_for", [])
+        except Exception:
+            _bounds.setdefault("human_review_mode", "none")
+            _bounds.setdefault("review_required_for", [])
+        cmd += [
+            "--governance-profile-id", resolved_profile_id,
+            "--policy-bounds", json.dumps(_bounds, separators=(",", ":")),
+        ]
+    except Exception:
+        # If bounds can't be resolved, the subprocess defaults to a
+        # permissive gate (governance off) -- never block spawning.
+        pass
 
     # Slice 4a: resumed-after-review sessions skip deliberation and route
     # straight to Operator (the synthesis is already settled and composed
@@ -605,12 +613,6 @@ def spawn_adam_session(
         # matches the one whose policy bounds were enforced.
         "governance_profile_id": resolved_profile_id,
     }
-    if parent_session_id and resumed_from_review:
-        process_info["resumed_from_review"] = True
-        if review_decision:
-            process_info["review_decision"] = review_decision
-        if review_resolved_at:
-            process_info["review_resolved_at"] = review_resolved_at
     with open(session_dir / ".process_info.json", "w", encoding="utf-8") as f:
         json.dump(process_info, f, indent=2)
 
@@ -783,217 +785,6 @@ def _load_pause_state(session_dir: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
-    """Write JSON atomically (temp file + replace)."""
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=path.name + ".",
-        suffix=".tmp",
-        dir=str(parent),
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        if path.exists():
-            os.chmod(tmp_path, path.stat().st_mode & 0o777)
-        else:
-            os.chmod(tmp_path, 0o644)
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
-def _flock_exclusive(lockfile: Path) -> int:
-    lockfile.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(lockfile, os.O_RDWR | os.O_CREAT, 0o600)
-    fcntl.flock(lock_fd, fcntl.LOCK_EX)
-    return lock_fd
-
-
-def _flock_release(lock_fd: int) -> None:
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-    finally:
-        os.close(lock_fd)
-
-
-def pause_is_open(pause: Optional[Dict[str, Any]]) -> bool:
-    """True when pause_state represents an unresolved pause (backward compatible)."""
-    if not pause:
-        return False
-    if pause.get("resolved"):
-        return False
-    if pause.get("resolving"):
-        return False
-    return True
-
-
-def normalize_review_decision(decision: str) -> str:
-    """Map API decision values to stored review_decision labels."""
-    d = (decision or "approve").strip().lower()
-    if d == "reject":
-        return "declined"
-    return d
-
-
-def _session_review_resolved(session_dir: Path) -> bool:
-    """True when session_state already records a resolved review."""
-    state_path = session_dir / "session_state.json"
-    if not state_path.is_file():
-        return False
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    runtime = state.get("runtime_state", {}) or {}
-    if (runtime.get("end_reason") or "").lower() == "review_resolved":
-        return True
-    gov = runtime.get("governance", {}) or {}
-    return bool(gov.get("review_decision")) and not gov.get("awaiting_human_review")
-
-
-@contextmanager
-def _claim_pause_resolution(
-    session_dir: Path,
-    username: str,
-) -> Iterator[Dict[str, Any]]:
-    """
-    Atomically claim an open pause for resolution. Raises HTTPException(409)
-    if already resolved, resolving, or missing. Yields the pause dict after
-    marking it resolving; caller must finalize or revert.
-    """
-    pause_path = session_dir / "pause_state.json"
-    lockfile = pause_path.with_name("pause_state.json.lock")
-    lock_fd = _flock_exclusive(lockfile)
-    claimed: Dict[str, Any]
-    try:
-        pause = _load_pause_state(session_dir)
-        if pause is None:
-            raise HTTPException(
-                status_code=409,
-                detail="this session is not paused (no pause_state.json found)",
-            )
-        if not pause_is_open(pause):
-            raise HTTPException(
-                status_code=409,
-                detail="This review has already been resolved.",
-            )
-        if _session_review_resolved(session_dir):
-            raise HTTPException(
-                status_code=409,
-                detail="This review has already been resolved.",
-            )
-        claimed = dict(pause)
-        claimed["resolving"] = True
-        claimed["resolving_at"] = datetime.now().isoformat(timespec="seconds")
-        claimed["resolving_by"] = username
-        _write_json_atomic(pause_path, claimed)
-    finally:
-        _flock_release(lock_fd)
-
-    try:
-        yield claimed
-    except Exception:
-        _revert_pause_resolving(session_dir)
-        raise
-
-
-def _revert_pause_resolving(session_dir: Path) -> None:
-    """Clear an in-flight resolving marker after spawn failure."""
-    pause_path = session_dir / "pause_state.json"
-    lockfile = pause_path.with_name("pause_state.json.lock")
-    lock_fd = _flock_exclusive(lockfile)
-    try:
-        pause = _load_pause_state(session_dir)
-        if not pause or pause.get("resolved"):
-            return
-        pause = dict(pause)
-        pause.pop("resolving", None)
-        pause.pop("resolving_at", None)
-        pause.pop("resolving_by", None)
-        _write_json_atomic(pause_path, pause)
-    finally:
-        _flock_release(lock_fd)
-
-
-def _finalize_review_resolution(
-    session_dir: Path,
-    *,
-    pause: Dict[str, Any],
-    decision: str,
-    guidance: str,
-    resumed_as: Optional[str],
-    resolved_by: str,
-    resolved_at: str,
-    pause_type: str,
-) -> None:
-    """Mark parent session and pause_state as resolved after review."""
-    pause_path = session_dir / "pause_state.json"
-    lockfile = pause_path.with_name("pause_state.json.lock")
-    lock_fd = _flock_exclusive(lockfile)
-    try:
-        current = _load_pause_state(session_dir) or dict(pause)
-        current["resolved"] = True
-        current["resolved_at"] = resolved_at
-        current["decision"] = decision
-        current["resumed_as"] = resumed_as
-        current["resolved_by"] = resolved_by
-        current.pop("resolving", None)
-        current.pop("resolving_at", None)
-        current.pop("resolving_by", None)
-        _write_json_atomic(pause_path, current)
-
-        state_path = session_dir / "session_state.json"
-        if state_path.is_file():
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-            except Exception:
-                state = {}
-        else:
-            state = {"schema_version": "1.0", "runtime_state": {}, "governance_state": {}}
-
-        runtime = state.setdefault("runtime_state", {})
-        gov = runtime.setdefault("governance", {})
-        runtime["end_reason"] = "review_resolved"
-        if not runtime.get("ended_at"):
-            runtime["ended_at"] = resolved_at
-        gov["awaiting_human_review"] = False
-        gov["awaiting_information"] = False
-        gov["review_decision"] = decision
-        gov["review_resolved_at"] = resolved_at
-        gov["review_guidance"] = guidance.strip() or None
-        gov["resumed_as"] = resumed_as
-        if pause_type == "information":
-            gov["information_reason"] = pause.get("information_reason")
-        _write_json_atomic(state_path, state)
-    finally:
-        _flock_release(lock_fd)
-
-    try:
-        audit_path = session_dir / "audit.jsonl"
-        audit_row: Dict[str, Any] = {
-            "event": "human_review_resolved" if pause_type == "gate_review" else "information_pause_resolved",
-            "guidance": guidance.strip(),
-            "resumed_as": resumed_as,
-            "resolved_by": resolved_by,
-            "pause_type": pause_type,
-            "decision": decision,
-            "ts": resolved_at,
-        }
-        with audit_path.open("a", encoding="utf-8") as af:
-            af.write(json.dumps(audit_row) + "\n")
-    except Exception:
-        pass
-
-
 def _compose_resume_seed(pause: Dict[str, Any], guidance: str,
                          decision: str) -> str:
     """
@@ -1148,11 +939,6 @@ def _summarize_session(session_dir: Path) -> Dict[str, Any]:
         "governance_boundary_reason": None,
         "refusal_terminated": False,
         "refusal_reason": None,
-        "review_decision": None,
-        "review_resolved_at": None,
-        "review_guidance": None,
-        "resumed_as": None,
-        "resumed_from_review": False,
     }
 
     state_path  = session_dir / "session_state.json"
@@ -1211,17 +997,9 @@ def _summarize_session(session_dir: Path) -> Dict[str, Any]:
             summary["governance_boundary_reason"] = gov.get("governance_boundary_reason")
             summary["refusal_terminated"] = bool(gov.get("refusal_terminated"))
             summary["refusal_reason"] = gov.get("refusal_reason")
-            summary["review_decision"] = gov.get("review_decision")
-            summary["review_resolved_at"] = gov.get("review_resolved_at")
-            summary["review_guidance"] = gov.get("review_guidance")
-            summary["resumed_as"] = gov.get("resumed_as")
             # Status from end_reason
             er = (summary["end_reason"] or "").lower()
-            if er == "review_resolved" or gov.get("review_decision"):
-                summary["status"] = "review_resolved"
-                summary["awaiting_human_review"] = False
-                summary["awaiting_information"] = False
-            elif gov.get("awaiting_human_review") or "awaiting_human_review" in er:
+            if gov.get("awaiting_human_review") or "awaiting_human_review" in er:
                 summary["status"] = "awaiting_human_review"
             elif gov.get("awaiting_information") or "awaiting_information" in er:
                 summary["status"] = "awaiting_information"
@@ -1339,14 +1117,6 @@ def _summarize_session(session_dir: Path) -> Dict[str, Any]:
         summary["parent_session_id"] = proc_info["parent_session_id"]
     if proc_info and proc_info.get("governance_profile_id"):
         summary["governance_profile_id"] = proc_info["governance_profile_id"]
-    if proc_info and proc_info.get("resumed_from_review"):
-        summary["resumed_from_review"] = True
-        summary["review_decision"] = (
-            proc_info.get("review_decision") or summary.get("review_decision")
-        )
-        summary["review_resolved_at"] = (
-            proc_info.get("review_resolved_at") or summary.get("review_resolved_at")
-        )
 
     pause = _load_pause_state(session_dir)
     if pause:
@@ -1355,35 +1125,6 @@ def _summarize_session(session_dir: Path) -> Dict[str, Any]:
             summary["information_reason"] = (
                 summary.get("information_reason") or pause.get("information_reason")
             )
-        if pause.get("pause_type") == "gate_review" and pause_is_open(pause):
-            summary["review_reason"] = (
-                summary.get("review_reason") or pause.get("review_reason")
-            )
-        if pause.get("resolved"):
-            summary["status"] = "review_resolved"
-            summary["awaiting_human_review"] = False
-            summary["awaiting_information"] = False
-            summary["review_decision"] = (
-                pause.get("decision") or summary.get("review_decision")
-            )
-            summary["review_resolved_at"] = (
-                pause.get("resolved_at") or summary.get("review_resolved_at")
-            )
-            summary["resumed_as"] = pause.get("resumed_as")
-        elif pause_is_open(pause):
-            pt = pause.get("pause_type") or "gate_review"
-            if pt == "information":
-                if summary["status"] not in ("review_resolved", "policy_blocked",
-                                             "governance_boundary_blocked",
-                                             "refusal_terminated"):
-                    summary["status"] = "awaiting_information"
-                    summary["awaiting_information"] = True
-            else:
-                if summary["status"] not in ("review_resolved", "policy_blocked",
-                                             "governance_boundary_blocked",
-                                             "refusal_terminated"):
-                    summary["status"] = "awaiting_human_review"
-                    summary["awaiting_human_review"] = True
 
     # Part 9: final status determination. Precedence:
     #   session_state.json present       -> complete or errored (per end_reason)
@@ -1644,7 +1385,17 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
 
     @app.get("/api/health")
     def health() -> Dict[str, Any]:
-        return {"ok": True, "version": "0.2.0"}
+        # Public endpoint (no auth required). Reports basic server
+        # state. Does NOT include director identity from .env -- in
+        # multi-user mode the director concept is per-user, not global.
+        return {
+            "ok":              True,
+            "adam_root":       str(adam_root.resolve()),
+            "logs_dir":        str(logs_dir.resolve()),
+            "logs_dir_exists": logs_dir.exists(),
+            "auth_mode":       "users.json",
+            "version":         "0.2.0",
+        }
 
     @app.post("/api/auth/login")
     def login(payload: LoginRequest, response: Response,
@@ -2159,11 +1910,6 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
                 detail="this session is not paused "
                        "(no pause_state.json found)",
             )
-        if not pause_is_open(pause) or _session_review_resolved(paused_dir):
-            raise HTTPException(
-                status_code=409,
-                detail="This review has already been resolved.",
-            )
 
         pause_type = pause.get("pause_type") or "gate_review"
 
@@ -2177,42 +1923,6 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
             raise HTTPException(
                 status_code=422,
                 detail="provide guidance text or at least one context document",
-            )
-
-        resolved_at = datetime.now().isoformat(timespec="seconds")
-        stored_decision = (
-            normalize_review_decision(decision)
-            if pause_type == "gate_review"
-            else "provided"
-        )
-
-        paused_proc = _read_process_info(paused_dir) or {}
-
-        # Decline: terminal resolution, no child session, no quota consumed.
-        if pause_type == "gate_review" and decision == "reject":
-            with _claim_pause_resolution(paused_dir, user["username"]) as claimed_pause:
-                _finalize_review_resolution(
-                    paused_dir,
-                    pause=claimed_pause,
-                    decision="declined",
-                    guidance=guidance,
-                    resumed_as=None,
-                    resolved_by=user["username"],
-                    resolved_at=resolved_at,
-                    pause_type=pause_type,
-                )
-            return NewSessionResponse(
-                session_id=paused_id,
-                started_at=paused_proc.get("started_at") or resolved_at,
-                pid=int(paused_proc.get("pid") or 0),
-                session_dir=str(paused_dir),
-                seed_path=str(paused_dir / "seed.md"),
-                context_files=[],
-                status="review_resolved",
-                parent_session_id=paused_id,
-                review_decision="declined",
-                review_resolved_at=resolved_at,
-                declined=True,
             )
 
         allowed, reason = auth.can_start_session(user)
@@ -2245,6 +1955,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
 
         denied = auth.skills_denied_for_user(user)
 
+        paused_proc = _read_process_info(paused_dir) or {}
         resume_profile_id = paused_proc.get("governance_profile_id") \
             or pause.get("governance_profile_id")
 
@@ -2256,52 +1967,50 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
             )
             resume_after_review = False
             resume_after_information = True
+            audit_event = "information_pause_resolved"
         else:
             composed_seed = _compose_resume_seed(pause, guidance, decision)
             resume_after_review = True
             resume_after_information = False
+            audit_event = "human_review_resolved"
 
         if len(composed_seed) > SEED_MAX_CHARS:
             composed_seed = composed_seed[:SEED_MAX_CHARS]
 
-        with _claim_pause_resolution(paused_dir, user["username"]) as claimed_pause:
-            try:
-                result = spawn_adam_session(
-                    adam_root=adam_root,
-                    logs_dir=logs_dir,
-                    user_id=user["username"],
-                    display_name=user.get("display_name", user["username"]),
-                    email=user.get("email", ""),
-                    seed_text=composed_seed,
-                    context_files=files_data,
-                    max_turns=effective_turns,
-                    no_verify=no_verify,
-                    disable_skills=denied,
-                    parent_session_id=paused_id,
-                    governance_profile_id=resume_profile_id,
-                    resume_after_review=resume_after_review,
-                    resume_after_information=resume_after_information,
-                    resumed_from_review=True,
-                    review_decision=stored_decision,
-                    review_resolved_at=resolved_at,
-                )
-            except HTTPException:
-                _revert_pause_resolving(paused_dir)
-                raise
-            except Exception:
-                _revert_pause_resolving(paused_dir)
-                raise
+        result = spawn_adam_session(
+            adam_root         = adam_root,
+            logs_dir          = logs_dir,
+            user_id           = user["username"],
+            display_name      = user.get("display_name", user["username"]),
+            email             = user.get("email", ""),
+            seed_text         = composed_seed,
+            context_files     = files_data,
+            max_turns         = effective_turns,
+            no_verify         = no_verify,
+            disable_skills    = denied,
+            parent_session_id = paused_id,
+            governance_profile_id = resume_profile_id,
+            resume_after_review = resume_after_review,
+            resume_after_information = resume_after_information,
+        )
 
-            _finalize_review_resolution(
-                paused_dir,
-                pause=claimed_pause,
-                decision=stored_decision,
-                guidance=guidance,
-                resumed_as=result["session_id"],
-                resolved_by=user["username"],
-                resolved_at=resolved_at,
-                pause_type=pause_type,
-            )
+        try:
+            audit_path = paused_dir / "audit.jsonl"
+            with audit_path.open("a", encoding="utf-8") as af:
+                audit_row: Dict[str, Any] = {
+                    "event":         audit_event,
+                    "guidance":      guidance.strip(),
+                    "uploaded_docs": uploaded_names,
+                    "resumed_as":    result["session_id"],
+                    "resolved_by":   user["username"],
+                    "pause_type":    pause_type,
+                    "ts":            datetime.now().isoformat(timespec="seconds"),
+                }
+                if pause_type == "gate_review":
+                    audit_row["decision"] = decision
+                af.write(json.dumps(audit_row) + "\n")
+        except Exception:
+            pass
 
         try:
             auth.decrement_sessions_remaining(user["username"])
@@ -2309,17 +2018,13 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
             pass
 
         return NewSessionResponse(
-            session_id=result["session_id"],
-            started_at=result["started_at"],
-            pid=result["pid"],
-            session_dir=result["session_dir"],
-            seed_path=result["seed_path"],
-            context_files=result["context_files"],
-            status=result["status"],
-            parent_session_id=paused_id,
-            review_decision=stored_decision,
-            review_resolved_at=resolved_at,
-            declined=False,
+            session_id    = result["session_id"],
+            started_at    = result["started_at"],
+            pid           = result["pid"],
+            session_dir   = result["session_dir"],
+            seed_path     = result["seed_path"],
+            context_files = result["context_files"],
+            status        = result["status"],
         )
 
     @app.get("/api/governance/profiles")
@@ -2373,9 +2078,6 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         except RuntimeError as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
         return governance.get_admin_view(skill_universe)
-
-    class UserGovernanceProfileUpdate(BaseModel):
-        governance_profile: Optional[str] = None
 
     @app.get("/api/admin/users")
     def get_admin_users(user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
@@ -2523,12 +2225,6 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
             "verifications": claims,
             "summary":      verification.summarize_claims(claims),
         }
-
-    class VerificationOverrideBody(BaseModel):
-        claim_id: str
-        status:   str
-        reason:   str
-        feedback: Optional[str] = None
 
     @app.post("/api/sessions/{session_id}/verifications/override")
     def post_verification_override(

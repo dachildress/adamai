@@ -19,6 +19,31 @@
 
 const API_BASE = '/api'
 
+
+// FastAPI error bodies put the message in `detail`, which can be:
+//   - a string  -> use as-is
+//   - an array of validation objects (422) -> join their msg fields
+//   - an object (e.g. {errors:[...], message:"..."}) -> use message/errors
+// Anything else is stringified safely. This NEVER returns "[object Object]"
+// (the bug that masked real errors: String([{...}]) === "[object Object]").
+export function formatApiDetail(detail, status) {
+  const prefix = status ? `HTTP ${status}: ` : ''
+  if (detail == null) return `HTTP ${status || ''}`.trim()
+  if (typeof detail === 'string') return prefix + detail
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) => (d && typeof d === 'object' ? (d.msg || JSON.stringify(d)) : String(d)))
+      .filter(Boolean)
+    return prefix + (msgs.join('; ') || 'request validation failed')
+  }
+  if (typeof detail === 'object') {
+    if (detail.message) return prefix + detail.message
+    if (Array.isArray(detail.errors)) return prefix + detail.errors.join('; ')
+    return prefix + JSON.stringify(detail)
+  }
+  return prefix + String(detail)
+}
+
 // ============================================================
 // v5 multi-user auth helpers
 // ============================================================
@@ -34,7 +59,7 @@ export async function login(username, password) {
     let detail = `HTTP ${r.status}`
     try {
       const body = await r.json()
-      if (body?.detail) detail = String(body.detail)
+      detail = formatApiDetail(body?.detail, r.status)
     } catch {}
     const err = new Error(detail)
     err.status = r.status
@@ -107,7 +132,7 @@ export async function overrideVerificationClaim(sessionId, { claimId, status, re
     let detail = `HTTP ${r.status}`
     try {
       const body = await r.json()
-      if (body?.detail) detail = String(body.detail)
+      detail = formatApiDetail(body?.detail, r.status)
     } catch {}
     const err = new Error(detail)
     err.status = r.status
@@ -277,7 +302,7 @@ export async function fetchGovernanceAdmin() {
     let detail = `HTTP ${r.status}`
     try {
       const body = await r.json()
-      if (body?.detail) detail = String(body.detail)
+      detail = formatApiDetail(body?.detail, r.status)
     } catch {}
     const err = new Error(detail)
     err.status = r.status
@@ -347,7 +372,7 @@ export async function fetchAdminUsers() {
     let detail = `HTTP ${r.status}`
     try {
       const body = await r.json()
-      if (body?.detail) detail = String(body.detail)
+      detail = formatApiDetail(body?.detail, r.status)
     } catch {}
     const err = new Error(detail)
     err.status = r.status
@@ -373,7 +398,7 @@ export async function patchUserGovernanceProfile(username, governanceProfile) {
     let detail = `HTTP ${r.status}`
     try {
       const body = await r.json()
-      if (body?.detail) detail = String(body.detail)
+      detail = formatApiDetail(body?.detail, r.status)
     } catch {}
     const err = new Error(detail)
     err.status = r.status

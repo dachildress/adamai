@@ -702,7 +702,8 @@ function UsersAssignmentPanel({ profileIds }) {
       await patchUserGovernanceProfile(username, value || null)
       await loadUsers()
     } catch (e) {
-      setRowError(`${username}: ${e.message || e}`)
+      const msg = (e && e.message) ? e.message : (typeof e === 'string' ? e : 'request failed')
+      setRowError(`${username}: ${msg}`)
     } finally {
       setSavingUser(null)
     }
