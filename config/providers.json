@@ -1,0 +1,28 @@
+{
+  "openai": {
+    "api_key_env": "OPENAI_API_KEY",
+    "sdk_module":  "openai",
+    "sdk_class":   "OpenAI",
+    "base_url":    null,
+    "retry": {
+      "max_attempts":               4,
+      "initial_backoff_seconds":    1.0,
+      "backoff_multiplier":         2.0,
+      "max_backoff_seconds":        30.0,
+      "respect_retry_after_header": true
+    }
+  },
+  "anthropic": {
+    "api_key_env": "ANTHROPIC_API_KEY",
+    "sdk_module":  "anthropic",
+    "sdk_class":   "Anthropic",
+    "base_url":    null,
+    "retry": {
+      "max_attempts":               4,
+      "initial_backoff_seconds":    1.0,
+      "backoff_multiplier":         2.0,
+      "max_backoff_seconds":        30.0,
+      "respect_retry_after_header": true
+    }
+  }
+}

@@ -1,0 +1,25 @@
+name: test_echo
+version: "1.0"
+description: >
+  Test skill used to verify the SkillRuntime end-to-end. Echoes the
+  provided input back as a SkillResult so the orchestrator can confirm
+  parsing, allowed_callers enforcement, audit recording, and transcript
+  injection all work without requiring real document rendering or
+  external services.
+
+risk_level: low
+audit_required: true
+llm_access: false
+
+allowed_callers:
+  - Operator
+
+actions:
+  echo:
+    description: >
+      Returns the provided 'message' value verbatim as part of the
+      SkillResult. Used to prove the SkillRuntime invocation loop.
+    required_args:
+      - message
+    optional_args:
+      - prefix

@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "_comment": "ADAM governance config. Profiles SELECT a policy_bounds ruleset; rulesets DEFINE what is allowed. Rules live in policy_bounds only -- never duplicated onto a profile -- so there is one source of truth. Slice 1: this data model exists and is attached to sessions, but NOTHING here is enforced yet. Enforcement arrives in Slice 2 (skill availability) and Slice 3 (the post-synthesis policy gate). Edit this file to add profiles or rulesets; it is read at session start.",
+
+  "policy_bounds": {
+    "standard": {
+      "id": "standard",
+      "name": "Standard",
+      "description": "General-purpose bounds. All skills available. This is the default and is intentionally permissive so that enabling governance changes no existing behavior; per-role denials (e.g. pilots' email block) still apply on top via the role layer. Choose education_safe or strict for constrained sessions.",
+      "allowed_skills": ["document", "slidedeck", "coder", "websearch", "test_echo", "email"],
+      "blocked_skills": [],
+      "allowed_artifact_types": ["document", "slidedeck", "code"],
+      "external_actions_allowed": true,
+      "email_send_allowed": true,
+      "file_write_allowed": true,
+      "public_output_rules": "none",
+      "education_data_rules": "none"
+    },
+    "education_safe": {
+      "id": "education_safe",
+      "name": "Education Safe (FERPA/COPPA-aware)",
+      "description": "K-12 bounds. Artifacts allowed; external sends blocked; student-data and public-facing output gated for review.",
+      "allowed_skills": ["document", "slidedeck", "websearch"],
+      "blocked_skills": ["email", "coder"],
+      "allowed_artifact_types": ["document", "slidedeck"],
+      "external_actions_allowed": false,
+      "email_send_allowed": false,
+      "file_write_allowed": true,
+      "public_output_rules": "review_required",
+      "education_data_rules": "ferpa_coppa_restricted"
+    },
+    "strict": {
+      "id": "strict",
+      "name": "Strict (external actions restricted)",
+      "description": "Most restrictive. Any external action, email, or file write requires explicit approval.",
+      "allowed_skills": ["document", "slidedeck", "websearch"],
+      "blocked_skills": ["email", "coder"],
+      "allowed_artifact_types": ["document", "slidedeck"],
+      "external_actions_allowed": false,
+      "email_send_allowed": false,
+      "file_write_allowed": false,
+      "public_output_rules": "review_required",
+      "education_data_rules": "ferpa_coppa_restricted"
+    }
+  },
+
+  "governance_profiles": {
+    "general": {
+      "id": "general",
+      "name": "General",
+      "description": "Default profile. No human review; standard bounds.",
+      "policy_bounds_id": "standard",
+      "human_review_mode": "none",
+      "review_required_for": []
+    },
+    "education": {
+      "id": "education",
+      "name": "Education",
+      "description": "K-12 deployments. Human review for public-facing artifacts; FERPA/COPPA-aware bounds.",
+      "policy_bounds_id": "education_safe",
+      "human_review_mode": "conditional",
+      "review_required_for": ["public_facing_artifact", "student_data_output"]
+    },
+    "external_action_restricted": {
+      "id": "external_action_restricted",
+      "name": "External Action Restricted",
+      "description": "Human review required before any external action; strict bounds.",
+      "policy_bounds_id": "strict",
+      "human_review_mode": "required",
+      "review_required_for": ["external_action", "email_send", "file_write"]
+    }
+  },
+
+  "default_profile_id": "general"
+}

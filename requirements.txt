@@ -1,0 +1,41 @@
+# ADAM runtime dependencies
+#
+# Install with: pip install -r requirements.txt
+#
+# These are the third-party packages ADAM requires at runtime. All other
+# imports in adam_agent_chat.py are from the Python standard library.
+# The .env loader is a custom minimal implementation, so python-dotenv
+# is NOT required.
+#
+# Version pins are intentionally absent. If a future version of any of
+# these breaks ADAM, pin to the last known good version here.
+
+
+# Anthropic API SDK -- used by Sonnet (advisory) and Haiku (Truthseeker,
+# Summarizer).
+anthropic
+
+# OpenAI API SDK -- used by GPT-4o agents per agents.json.
+openai
+
+# HTML/text extraction for source pages fetched during Truthseeker
+# verification. Without trafilatura, only search snippets can be judged,
+# and the policy rules prevent snippet-only sources from reaching VERIFIED.
+trafilatura
+
+# HTTP client for SearXNG search queries during Truthseeker verification.
+# Without requests, no claims can be verified -- every verification turn
+# errors out with ModuleNotFoundError.
+requests
+
+# .docx text extraction for the Context Loader. Without python-docx, .docx
+# files in --context-dir cannot be loaded and will be soft-failed with a
+# warning. .docx is a common format for governance documents, so this is
+# effectively required for production use.
+python-docx
+
+# .pdf text extraction for the Context Loader. Without pypdf, .pdf files
+# in --context-dir cannot be loaded. Note: pypdf handles text-based PDFs
+# only; scanned/image-based PDFs require OCR which is out of scope for v1
+# and will soft-fail with a clear warning.
+pypdf

@@ -1,0 +1,53 @@
+{
+  "session_defaults": {
+    "max_turns": 24,
+    "delay_seconds": 1.0,
+    "history_messages": 16,
+    "synth_cadence": 4,
+    "seed_file": "prompts/seed.md"
+  },
+  "context": {
+    "enabled": true,
+    "target_context_tokens": 16000,
+    "soft_warning_tokens": 24000,
+    "hard_refusal_tokens": 64000,
+    "estimate_tokens_by_chars_divisor": 4,
+    "require_privacy_confirmation": true,
+    "allow_yes_context_risk_flag": true,
+    "allow_override_context_limit": true,
+    "cache_dir": "logs/context_cache",
+    "pdf_min_text_chars": 100,
+    "pdf_likely_scanned_size_bytes": 5120
+  },
+  "skills": {
+    "enabled": true,
+    "auto_discover": true,
+    "skill_dir": "skills",
+    "enabled_skills": [
+      "document",
+      "email",
+      "test_echo",
+      "websearch",
+      "slidedeck",
+      "coder"
+    ],
+    "disabled_skills": [],
+    "load_disabled_skills_metadata": true,
+    "max_content_size_bytes": 204800
+  },
+  "truthseeker": {
+    "search_top_n": 5,
+    "max_claims_per_turn": 3,
+    "page_fetch_timeout_seconds": 6,
+    "search_http_timeout_seconds": 10,
+    "parallel_workers": 5,
+    "source_excerpt_chars": 4000,
+    "skip_tier_5_sources": true,
+    "judgment_cache_enabled": true
+  },
+  "operator_continuations": {
+    "enabled": true,
+    "max_operator_continuations": 4,
+    "hard_cap": 10
+  }
+}

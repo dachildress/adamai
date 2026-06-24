@@ -1,0 +1,64 @@
+# ADAM GUI backend dependencies
+#
+# Install from the V4 root with:
+#
+#     pip install -r gui/requirements.txt
+#
+# This installs the FastAPI server stack plus its multipart parser.
+# The ADAM runtime itself has its own requirements.txt in the V4 root
+# (anthropic, openai, trafilatura, requests, python-docx, pypdf) --
+# install that one separately. Both lists install cleanly into the
+# same venv with no conflicts.
+#
+# Note on venv hygiene: venvs are NOT relocatable. If pip and python
+# resolve to different project paths, the venv was probably copied
+# from another project rather than created in place. Recreate it:
+#
+#     python3 -m venv venv
+#     source venv/bin/activate
+#     pip install -r requirements.txt
+#     pip install -r gui/requirements.txt
+#
+# Symptoms of a copied venv: `pip install foo` reports success, but
+# `python -c "import foo"` raises ModuleNotFoundError, because pip
+# installs into the original venv's site-packages while python loads
+# from the new venv's site-packages.
+#
+# Version pins are intentionally absent. If a future version of any
+# package breaks the GUI, pin to the last known good version here.
+
+
+# Web framework. Backs every GUI endpoint: session list, event stream,
+# SSE tail, director_message inbox, new-session spawn, artifact serve.
+# Pulls starlette and pydantic in as transitive dependencies.
+fastapi
+
+# ASGI server. Used by gui/adam_gui.py to run the FastAPI app.
+uvicorn
+
+# Server-Sent Events helper. Used by /api/sessions/{id}/stream to push
+# events.jsonl lines to the browser. Provides keep-alive, reconnect,
+# and the EventSourceResponse class.
+sse-starlette
+
+# Pydantic v2 -- request/response model validation. Already pulled in
+# by FastAPI as a transitive dependency, but listed explicitly so the
+# dependency is visible and pin-able.
+pydantic
+
+# Part 8/9: multipart/form-data parser. FastAPI loads this at app-build
+# time whenever any endpoint declares Form(...) or File(...). The
+# new-session POST uses both (seed as a form field, context files as
+# uploads). Without this installed, the backend dies at startup with
+# a long RuntimeError stack that points away from the real cause.
+# adam_gui.py now pre-flights this so the failure mode is a clean
+# one-line install hint instead.
+python-multipart
+
+# v5 multi-user (Part 10): bcrypt for password hashing. Used by both
+# the backend (gui/backend/auth.py) and the user-management CLI
+# (gui/manage_users.py). Always uses random per-password salt; the
+# work factor is 12 rounds. Replacing bcrypt with argon2 or scrypt
+# later is a small change; the verify_password() interface is
+# already library-agnostic from the call sites.
+bcrypt

@@ -1,0 +1,37 @@
+{
+  "gpt-4o": {
+    "provider":              "openai",
+    "endpoint_type":         "openai_chat_completions",
+    "supports_system_param": false,
+    "supports_temperature":  true,
+    "default_max_tokens":    1024
+  },
+  "gpt-4o-mini": {
+    "provider":              "openai",
+    "endpoint_type":         "openai_chat_completions",
+    "supports_system_param": false,
+    "supports_temperature":  true,
+    "default_max_tokens":    1024
+  },
+  "claude-sonnet-4-6": {
+    "provider":              "anthropic",
+    "endpoint_type":         "anthropic_messages",
+    "supports_system_param": true,
+    "supports_temperature":  true,
+    "default_max_tokens":    1024
+  },
+  "claude-haiku-4-5-20251001": {
+    "provider":              "anthropic",
+    "endpoint_type":         "anthropic_messages",
+    "supports_system_param": true,
+    "supports_temperature":  true,
+    "default_max_tokens":    1024
+  },
+  "claude-opus-4-7": {
+    "provider":              "anthropic",
+    "endpoint_type":         "anthropic_messages",
+    "supports_system_param": true,
+    "supports_temperature":  true,
+    "default_max_tokens":    1024
+  }
+}

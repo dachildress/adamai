@@ -1,0 +1,98 @@
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+*.token
+*.secret
+*.p12
+*.pfx
+
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+venv*/
+*.venv/
+venv.broken-from-Version2/
+
+# Python cache / build files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Node / frontend
+node_modules/
+gui/frontend/node_modules/
+gui/frontend/dist/
+
+# ADAM runtime data
+gui/users.json
+gui/login_sessions.json
+gui/pending_registrations.json
+gui/gui/users.json
+gui/gui/login_sessions.json
+*.lock
+gui/*.lock
+
+# Logs
+logs/
+gui/logs/
+*.log
+stderr.log
+stdout.log
+
+# Generated artifacts / uploads / sessions
+artifacts/
+uploads/
+sessions/
+runs/
+tmp/
+temp/
+test_artifacts/
+
+# Local caches
+.cache/
+.npm/
+
+# Shell / OS / editor junk
+.bash_history
+.lesshst
+.bashrc
+.profile
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Backup and patch files
+*.bak
+*.diff
+*.patch
+*.orig
+
+# Never publish environment examples unless intentionally sanitized
+example.env
+
+# Exposed or rotated runtime files
+*.exposed.*
+login_sessions.json*
+users.json*
+pending_registrations.json*
+
+# Local backups and scratch files
+*.bak*
+*.slice*
+test_context/
+
+# Private/demo documents
+docs/
