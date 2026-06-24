@@ -95,6 +95,19 @@ from adam.skills_runtime import (
     discover_skills,
     build_skill_manifest_block,
 )
+from adam.core.governance_invariants import (
+    GOVERNANCE_BOUNDARY_END_REASON,
+    evaluate_self_modification_boundary,
+)
+from adam.core.empty_termination import (
+    REFUSAL_TERMINATED_END_REASON,
+    evaluate_refusal_termination,
+    evaluate_unsafe_execution_boundary,
+)
+from adam.core.information_pause import (
+    INFORMATION_PAUSE_END_REASON,
+    evaluate_information_pause,
+)
 
 
 # ============================================================
@@ -272,6 +285,120 @@ def _write_pause_state(*, ctx, turn: int, synthesis_text: str,
         # still ends awaiting_human_review even if the file write fails,
         # but resume would be degraded. Log it.
         ctx.log(f"[GOVERNANCE] WARNING: could not write pause_state.json: {e}")
+
+
+def _write_information_pause_state(
+    *,
+    ctx,
+    turn: int,
+    agent_name: str,
+    agent_text: str,
+    information_reason: str,
+    history: List[Dict[str, str]],
+    wrap_up: "WrapUpState",
+    governance_profile_id: Optional[str],
+    consecutive_synth_convergence: int,
+) -> None:
+    """Slice 4b: persist deliberation snapshot for mid-loop resume."""
+    try:
+        pause = {
+            "schema_version":              "1.0",
+            "pause_type":                  "information",
+            "status":                      INFORMATION_PAUSE_END_REASON,
+            "paused_at_turn":              turn,
+            "paused_agent":                agent_name,
+            "information_reason":        information_reason,
+            "agent_text":                  agent_text,
+            "history_snapshot":            list(history),
+            "wrap_up_snapshot": {
+                "requested":              wrap_up.requested,
+                "reason":                 wrap_up.reason,
+                "synth_done":             wrap_up.synth_done,
+                "operator_done":          wrap_up.operator_done,
+                "synth_wrap_up_turn":     wrap_up.synth_wrap_up_turn,
+                "operator_wrap_up_turn":  wrap_up.operator_wrap_up_turn,
+                "continuation_count":     wrap_up.continuation_count,
+            },
+            "consecutive_synth_convergence": consecutive_synth_convergence,
+            "governance_profile_id":       governance_profile_id,
+            "paused_ts":                   datetime.now().isoformat(timespec="seconds"),
+        }
+        out = ctx.session_dir / "pause_state.json"
+        out.write_text(json.dumps(pause, indent=2), encoding="utf-8")
+    except Exception as e:
+        ctx.log(f"[GOVERNANCE] WARNING: could not write information pause_state.json: {e}")
+
+
+def _restore_information_pause_resume(
+    *,
+    ctx,
+    args: argparse.Namespace,
+    history: List[Dict[str, str]],
+    wrap_up: "WrapUpState",
+    state: "_LoopState",
+    log,
+) -> None:
+    """Slice 4b: restore deliberation from parent pause_state.json."""
+    parent_id = getattr(args, "parent_session_id", None)
+    if not parent_id:
+        log("[RESUME] WARNING: --resume-after-information without parent id; "
+            "starting fresh deliberation.")
+        return
+
+    parent_dir = ctx.session_dir.parent / parent_id
+    pause_path = parent_dir / "pause_state.json"
+    if not pause_path.is_file():
+        log(f"[RESUME] WARNING: parent pause_state missing at {pause_path}; "
+            "starting fresh deliberation.")
+        return
+
+    try:
+        pause = json.loads(pause_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        log(f"[RESUME] WARNING: could not read parent pause_state: {e}")
+        return
+
+    if pause.get("pause_type") != "information":
+        log("[RESUME] WARNING: parent pause is not information-type; "
+            "starting fresh deliberation.")
+        return
+
+    snapshot = pause.get("history_snapshot") or []
+    if not isinstance(snapshot, list):
+        snapshot = []
+
+    history.clear()
+    history.extend(snapshot)
+
+    paused_turn = int(pause.get("paused_at_turn") or 0)
+    state.turn = paused_turn
+    state.consecutive_synth_convergence = int(
+        pause.get("consecutive_synth_convergence") or 0
+    )
+
+    wu = pause.get("wrap_up_snapshot") or {}
+    if wu.get("requested"):
+        wrap_up.requested = True
+        wrap_up.reason = wu.get("reason")
+    wrap_up.synth_done = bool(wu.get("synth_done"))
+    wrap_up.operator_done = bool(wu.get("operator_done"))
+    wrap_up.continuation_count = int(wu.get("continuation_count") or 0)
+
+    resume_note = (
+        "[Deliberation resumed after an information pause. The Director has "
+        "provided the requested information — see the session seed and any "
+        "new context documents. Continue deliberation from where you left off.]"
+    )
+    history.append({
+        "role":    "user",
+        "content": resume_note,
+        "agent":   "Director",
+    })
+
+    log(f"[RESUME] Deliberation resumed after information pause "
+        f"(parent {parent_id}, continuing after turn {paused_turn}).")
+    log(f"         Reason at pause: {pause.get('information_reason', '')}")
+    log()
 
 
 def evaluate_review_gate(synthesis_text: str,
@@ -797,6 +924,13 @@ class _LoopState:
     # the reason is the agent-facing explanation shown to the director.
     awaiting_human_review: bool = False
     review_reason:         Optional[str] = None
+    # Hard invariant: self-modification / capability-acquisition requests.
+    governance_boundary_blocked: bool = False
+    governance_boundary_reason:  Optional[str] = None
+    refusal_terminated:        bool = False
+    refusal_reason:            Optional[str] = None
+    awaiting_information:      bool = False
+    information_reason:        Optional[str] = None
 
 
 def _inject_director_messages(
@@ -852,6 +986,43 @@ def _inject_director_messages(
             "source":        getattr(msg, "source", "terminal"),
             "message_id":    getattr(msg, "message_id", None),
         })
+        boundary_reason = evaluate_self_modification_boundary(msg.raw_text or cleaned)
+        if boundary_reason:
+            StopState.governance_boundary = boundary_reason
+            ctx.log(f"[T{turn_idx}] >>> GOVERNANCE BOUNDARY: Director request blocked")
+            ctx.log(f"           Reason: {boundary_reason}")
+            ctx.log()
+            ctx.emit_event("governance_boundary_blocked", {
+                "turn":   turn_idx,
+                "source": "director_message",
+                "reason": boundary_reason,
+            })
+            ctx.audit({
+                "turn":   turn_idx,
+                "event":  "governance_boundary_blocked",
+                "source": "director_message",
+                "reason": boundary_reason,
+                "ts":     datetime.now().isoformat(timespec="seconds"),
+            })
+        else:
+            unsafe_reason = evaluate_unsafe_execution_boundary(msg.raw_text or cleaned)
+            if unsafe_reason:
+                StopState.refusal_termination = unsafe_reason
+                ctx.log(f"[T{turn_idx}] >>> REFUSAL TERMINATION: unsafe request blocked")
+                ctx.log(f"           Reason: {unsafe_reason}")
+                ctx.log()
+                ctx.emit_event("refusal_terminated", {
+                    "turn":   turn_idx,
+                    "source": "director_message",
+                    "reason": unsafe_reason,
+                })
+                ctx.audit({
+                    "turn":   turn_idx,
+                    "event":  "refusal_terminated",
+                    "source": "director_message",
+                    "reason": unsafe_reason,
+                    "ts":     datetime.now().isoformat(timespec="seconds"),
+                })
         ctx.log(f"[T{turn_idx}] {cleaned}")
     if pending_msgs:
         ctx.log()
@@ -1254,6 +1425,16 @@ def run_deliberation_loop(
             "to Operator (deliberation already settled at pause).")
         log()
 
+    elif getattr(args, "resume_after_information", False):
+        _restore_information_pause_resume(
+            ctx=ctx,
+            args=args,
+            history=history,
+            wrap_up=wrap_up,
+            state=state,
+            log=log,
+        )
+
     while state.turn < deliberation_cap + state.continuation_budget:
         state.turn += 1
         turn = state.turn
@@ -1276,6 +1457,24 @@ def run_deliberation_loop(
         _inject_director_messages(
             ctx=ctx, director=director, history=history, turn_idx=turn,
         )
+
+        if StopState.governance_boundary:
+            state.governance_boundary_blocked = True
+            state.governance_boundary_reason = StopState.governance_boundary
+            state.end_reason = GOVERNANCE_BOUNDARY_END_REASON
+            log(f"[T{turn}] >>> GOVERNANCE BOUNDARY: session stopped")
+            log(f"           Reason: {StopState.governance_boundary}")
+            log()
+            break
+
+        if StopState.refusal_termination:
+            state.refusal_terminated = True
+            state.refusal_reason = StopState.refusal_termination
+            state.end_reason = REFUSAL_TERMINATED_END_REASON
+            log(f"[T{turn}] >>> REFUSAL TERMINATION: session stopped")
+            log(f"           Reason: {StopState.refusal_termination}")
+            log()
+            break
 
         # Director halt: trigger wrap-up if requested
         if director.halt_requested and not wrap_up.requested:
@@ -1437,6 +1636,69 @@ def run_deliberation_loop(
 
         history.append({"role": "assistant", "content": reply, "agent": agent_name})
 
+        # Slice 4b: mid-loop information pause. When the Synthesizer signals
+        # missing input ("Not ready for decision:" etc.), pause resumably
+        # instead of cycling to the turn budget or running Operator.
+        if (
+            agent_name == "Synthesizer"
+            and not getattr(args, "resume_after_review", False)
+        ):
+            info_reason = evaluate_information_pause(reply, agent_name)
+            if info_reason is not None:
+                audit({
+                    "turn":             turn,
+                    "agent":            agent_name,
+                    "model_id":         model_id,
+                    "routing_reason":   routing_reason,
+                    "invocation_note":  invocation_note,
+                    "concern_label":    concern_label,
+                    "max_tokens":       max_tokens,
+                    "temperature":      temperature,
+                    "content":          reply,
+                    "ts":               datetime.now().isoformat(timespec="seconds"),
+                })
+                ctx.emit_event("turn_completed", {
+                    "turn":             turn,
+                    "agent":            agent_name,
+                    "routing_reason":   routing_reason,
+                    "model_id":         model_id,
+                    "concern_label":    concern_label,
+                    "content":          reply,
+                    "content_preview":  build_content_preview(reply),
+                    "content_length":   len(reply) if reply else 0,
+                    "duration_ms":      int((time.perf_counter() - _turn_start_time) * 1000),
+                })
+                state.awaiting_information = True
+                state.information_reason = info_reason
+                state.end_reason = INFORMATION_PAUSE_END_REASON
+                _write_information_pause_state(
+                    ctx=ctx,
+                    turn=turn,
+                    agent_name=agent_name,
+                    agent_text=reply,
+                    information_reason=info_reason,
+                    history=history,
+                    wrap_up=wrap_up,
+                    governance_profile_id=getattr(args, "governance_profile_id", None),
+                    consecutive_synth_convergence=state.consecutive_synth_convergence,
+                )
+                log(f"[T{turn}] >>> INFORMATION PAUSE: deliberation suspended")
+                log(f"           Reason: {info_reason}")
+                log()
+                ctx.emit_event("awaiting_information", {
+                    "turn":                  turn,
+                    "governance_profile_id": getattr(args, "governance_profile_id", None),
+                    "reason":                info_reason,
+                    "agent":                 agent_name,
+                })
+                audit({
+                    "turn":   turn,
+                    "event":  "awaiting_information",
+                    "reason": info_reason,
+                    "ts":     datetime.now().isoformat(timespec="seconds"),
+                })
+                break
+
         # Early-wrap-up trigger (conservative convergence detection).
         # If the Synthesizer signals genuine, high-confidence convergence
         # on TWO CONSECUTIVE Synthesizer passes, enter wrap-up now rather
@@ -1539,6 +1801,33 @@ def run_deliberation_loop(
                 })
                 # Mark wrap-up "complete" so no further routing occurs,
                 # and end the loop. Operator is intentionally NOT run.
+                wrap_up.operator_done = True
+                break
+
+            # Empty-termination gate. If the synthesis refused the requested
+            # action, Operator must not run and no substitute artifact may be
+            # produced (the helpfulness reflex that created incident logs and
+            # stray files after a refusal).
+            refusal_reason = evaluate_refusal_termination(reply)
+            if refusal_reason is not None:
+                state.refusal_terminated = True
+                state.refusal_reason = refusal_reason
+                state.end_reason = REFUSAL_TERMINATED_END_REASON
+                log(f"[T{turn}] >>> REFUSAL TERMINATION: Operator skipped")
+                log(f"           Reason: {refusal_reason}")
+                log()
+                ctx.emit_event("refusal_terminated", {
+                    "turn":                  turn,
+                    "governance_profile_id": getattr(args, "governance_profile_id", None),
+                    "reason":                refusal_reason,
+                })
+                audit({
+                    "turn":   turn,
+                    "event":  "refusal_terminated",
+                    "governance_profile_id": getattr(args, "governance_profile_id", None),
+                    "reason": refusal_reason,
+                    "ts":     datetime.now().isoformat(timespec="seconds"),
+                })
                 wrap_up.operator_done = True
                 break
 
@@ -1911,6 +2200,12 @@ def _build_session_state(
     policy_block_reason: Optional[str] = None,
     awaiting_human_review: bool = False,
     review_reason:         Optional[str] = None,
+    awaiting_information:  bool = False,
+    information_reason:    Optional[str] = None,
+    governance_boundary_blocked: bool = False,
+    governance_boundary_reason:  Optional[str] = None,
+    refusal_terminated:        bool = False,
+    refusal_reason:            Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Build the four-domain session_state dict from authoritative sources.
@@ -1987,6 +2282,12 @@ def _build_session_state(
                 "policy_block_reason": policy_block_reason,
                 "awaiting_human_review": awaiting_human_review,
                 "review_reason":         review_reason,
+                "awaiting_information":  awaiting_information,
+                "information_reason":    information_reason,
+                "governance_boundary_blocked": governance_boundary_blocked,
+                "governance_boundary_reason":  governance_boundary_reason,
+                "refusal_terminated":        refusal_terminated,
+                "refusal_reason":            refusal_reason,
             },
             "audit_log_path":      str(audit_path),
             "verification_log_path": str(verification_path),

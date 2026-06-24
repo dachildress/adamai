@@ -97,9 +97,24 @@ export function Sidebar({ sessions, selectedSessionId, onSelect, sessionInfo, on
                             needs review
                           </span>
                         )}
+                        {s.status === 'awaiting_information' && (
+                          <span className="session-item__badge session-item__badge--review">
+                            needs info
+                          </span>
+                        )}
                         {s.status === 'policy_blocked' && (
                           <span className="session-item__badge session-item__badge--blocked">
                             policy blocked
+                          </span>
+                        )}
+                        {s.status === 'governance_boundary_blocked' && (
+                          <span className="session-item__badge session-item__badge--blocked">
+                            boundary
+                          </span>
+                        )}
+                        {s.status === 'refusal_terminated' && (
+                          <span className="session-item__badge session-item__badge--blocked">
+                            refused
                           </span>
                         )}
                       </>

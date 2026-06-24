@@ -6,6 +6,7 @@ import { RightBar } from './components/RightBar'
 import { PromptBar } from './components/PromptBar'
 import { NewSessionModal } from './components/NewSessionModal'
 import { ResumeModal } from './components/ResumeModal'
+import { GovernanceAdminModal } from './components/GovernanceAdminModal'
 import { LoginPage } from './components/LoginPage'
 import {
   fetchSessions, fetchSessionEvents, streamSessionEvents,
@@ -48,6 +49,7 @@ export default function App() {
   const [continuationFrom, setContinuationFrom] = useState(null)
   // Slice 4a: the session currently being reviewed/resumed (or null).
   const [reviewPaused, setReviewPaused] = useState(null)
+  const [showGovernanceAdmin, setShowGovernanceAdmin] = useState(false)
 
   const [state, dispatch] = useReducer(sessionReducer, EMPTY_STATE)
 
@@ -271,6 +273,7 @@ export default function App() {
         selectedSession={selectedId}
         connectionStatus={connectionStatus}
         onLogout={handleLogout}
+        onOpenGovernance={() => setShowGovernanceAdmin(true)}
       />
       <Sidebar
         sessions={sessions}
@@ -299,7 +302,7 @@ export default function App() {
         consumedMessageIds={state.consumed_message_ids}
         erroredMessageIds={state.errored_message_ids}
       />
-      <RightBar state={state} />
+      <RightBar state={state} sessionId={selectedId} user={user} />
 
       {showNewSession && (
         <NewSessionModal
@@ -313,9 +316,11 @@ export default function App() {
       {reviewPaused && (
         <ResumeModal
           paused={{
-            session_id:        reviewPaused.session_id,
-            review_reason:     reviewPaused.review_reason,
-            synthesis_preview: reviewPaused.synthesis_preview,
+            session_id:          reviewPaused.session_id,
+            pause_type:          reviewPaused.pause_type || reviewPaused.status,
+            review_reason:       reviewPaused.review_reason,
+            information_reason: reviewPaused.information_reason,
+            synthesis_preview:   reviewPaused.synthesis_preview,
           }}
           onClose={() => setReviewPaused(null)}
           onResumed={async (result) => {
@@ -325,6 +330,10 @@ export default function App() {
             if (result?.session_id) setSelectedId(result.session_id)
           }}
         />
+      )}
+
+      {showGovernanceAdmin && (
+        <GovernanceAdminModal onClose={() => setShowGovernanceAdmin(false)} />
       )}
     </div>
   )

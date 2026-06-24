@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Body, UploadFile, File, Form, Response, Cookie
+from fastapi import FastAPI, HTTPException, Request, Body, UploadFile, File, Form, Response, Cookie, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -50,9 +50,11 @@ from sse_starlette.sse import EventSourceResponse
 try:
     from . import auth  # when imported as backend.server
     from . import governance
+    from . import verification
 except ImportError:
     import auth          # when run directly
     import governance
+    import verification
 
 
 # ============================================================
@@ -195,6 +197,8 @@ class WhoamiResponse(BaseModel):
     sessions_remaining:     int            # -1 means unlimited
     max_turns_per_session:  int            # -1 means unlimited
     skills_denied:          List[str]      # for the frontend to grey-out controls
+    governance_profile:     Optional[str] = None   # assigned profile (pilots)
+    governance_profile_locked: bool = False        # True when server enforces assignment
 
 
 # ============================================================
@@ -348,6 +352,7 @@ def spawn_adam_session(
     parent_session_id: Optional[str] = None,
     governance_profile_id: Optional[str] = None,
     resume_after_review: bool = False,
+    resume_after_information: bool = False,
 ) -> Dict[str, Any]:
     """
     Part 9 / v5 multi-user: prepare a session directory and spawn ADAM.
@@ -519,6 +524,10 @@ def spawn_adam_session(
     # into the seed).
     if resume_after_review:
         cmd += ["--resume-after-review"]
+    if resume_after_information:
+        cmd += ["--resume-after-information"]
+    if parent_session_id:
+        cmd += ["--parent-session-id", parent_session_id]
 
     # Step 6: stdout/stderr capture. Files are opened in append mode
     # (write-binary), so subprocess.Popen can redirect to them without
@@ -811,6 +820,43 @@ def _compose_resume_seed(pause: Dict[str, Any], guidance: str,
     return "\n".join(lines).strip() + "\n"
 
 
+def _compose_information_resume_seed(
+    pause: Dict[str, Any],
+    guidance: str,
+    uploaded_names: List[str],
+) -> str:
+    """Slice 4b: seed for resuming mid-deliberation after an information pause."""
+    lines: List[str] = []
+    lines.append("## Resumed deliberation (information pause)")
+    lines.append("")
+    lines.append("The prior session paused mid-deliberation because:")
+    lines.append(pause.get("information_reason", "additional information was required"))
+    lines.append("")
+    if pause.get("agent_text"):
+        lines.append("## Synthesizer at pause")
+        lines.append("")
+        lines.append(str(pause.get("agent_text", "")).strip())
+        lines.append("")
+    if guidance.strip():
+        lines.append("## Director guidance")
+        lines.append("")
+        lines.append(guidance.strip())
+        lines.append("")
+    if uploaded_names:
+        lines.append("## New context documents")
+        lines.append("")
+        for name in uploaded_names:
+            lines.append(f"- {name}")
+        lines.append("")
+    lines.append("## Continue")
+    lines.append("")
+    lines.append(
+        "Resume deliberation with the information above. Do not repeat the "
+        "pause unless a genuinely new material gap remains."
+    )
+    return "\n".join(lines).strip() + "\n"
+
+
 def list_sessions(logs_dir: Path, user_id: str) -> List[Dict[str, Any]]:
     """
     Return a list of session summaries for the given director, newest
@@ -867,6 +913,13 @@ def _summarize_session(session_dir: Path) -> Dict[str, Any]:
         "policy_block_reason": None,
         "awaiting_human_review": False, # Slice 4a: paused for director review
         "review_reason": None,
+        "awaiting_information": False, # Slice 4b: paused for missing input
+        "information_reason": None,
+        "pause_type": None,
+        "governance_boundary_blocked": False,
+        "governance_boundary_reason": None,
+        "refusal_terminated": False,
+        "refusal_reason": None,
     }
 
     state_path  = session_dir / "session_state.json"
@@ -919,10 +972,22 @@ def _summarize_session(session_dir: Path) -> Dict[str, Any]:
             summary["policy_block_reason"] = gov.get("policy_block_reason")
             summary["awaiting_human_review"] = bool(gov.get("awaiting_human_review"))
             summary["review_reason"] = gov.get("review_reason")
+            summary["awaiting_information"] = bool(gov.get("awaiting_information"))
+            summary["information_reason"] = gov.get("information_reason")
+            summary["governance_boundary_blocked"] = bool(gov.get("governance_boundary_blocked"))
+            summary["governance_boundary_reason"] = gov.get("governance_boundary_reason")
+            summary["refusal_terminated"] = bool(gov.get("refusal_terminated"))
+            summary["refusal_reason"] = gov.get("refusal_reason")
             # Status from end_reason
             er = (summary["end_reason"] or "").lower()
             if gov.get("awaiting_human_review") or "awaiting_human_review" in er:
                 summary["status"] = "awaiting_human_review"
+            elif gov.get("awaiting_information") or "awaiting_information" in er:
+                summary["status"] = "awaiting_information"
+            elif gov.get("governance_boundary_blocked") or "governance_boundary_blocked" in er:
+                summary["status"] = "governance_boundary_blocked"
+            elif gov.get("refusal_terminated") or "refusal_terminated" in er:
+                summary["status"] = "refusal_terminated"
             elif gov.get("policy_blocked") or "policy_blocked" in er:
                 summary["status"] = "policy_blocked"
             elif "complete" in er:
@@ -1033,6 +1098,14 @@ def _summarize_session(session_dir: Path) -> Dict[str, Any]:
         summary["parent_session_id"] = proc_info["parent_session_id"]
     if proc_info and proc_info.get("governance_profile_id"):
         summary["governance_profile_id"] = proc_info["governance_profile_id"]
+
+    pause = _load_pause_state(session_dir)
+    if pause:
+        summary["pause_type"] = pause.get("pause_type")
+        if pause.get("pause_type") == "information":
+            summary["information_reason"] = (
+                summary.get("information_reason") or pause.get("information_reason")
+            )
 
     # Part 9: final status determination. Precedence:
     #   session_state.json present       -> complete or errored (per end_reason)
@@ -1202,7 +1275,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
         allow_credentials=True,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT", "PATCH"],
         allow_headers=["*"],
     )
 
@@ -1235,6 +1308,12 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         user = current_user_optional(request)
         if user is None:
             raise HTTPException(status_code=401, detail="not authenticated")
+        return user
+
+    def require_admin(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+        """Dependency: 403 unless the user has the admin role."""
+        if not is_admin(user):
+            raise HTTPException(status_code=403, detail="admin access required")
         return user
 
     def is_admin(user: Dict[str, Any]) -> bool:
@@ -1385,6 +1464,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
 
     def _whoami_payload(user: Dict[str, Any]) -> Dict[str, Any]:
         """Build the dict returned by /login and /whoami. Pure helper."""
+        locked = auth.is_quota_locked_user(user)
         return {
             "username":              user["username"],
             "display_name":          user.get("display_name", user["username"]),
@@ -1393,6 +1473,8 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
             "sessions_remaining":    user.get("sessions_remaining", 0),
             "max_turns_per_session": user.get("max_turns_per_session", 0),
             "skills_denied":         auth.skills_denied_for_user(user),
+            "governance_profile":    auth.assigned_governance_profile(user) if locked else None,
+            "governance_profile_locked": locked,
         }
 
     @app.get("/api/director")
@@ -1791,23 +1873,10 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         context_files: List[UploadFile] = File(default=[]),
     ) -> NewSessionResponse:
         """
-        Slice 4a: resume a session that paused at the human-review gate.
+        Slice 4a/4b: resume a paused session.
 
-        The paused session ended with status 'awaiting_human_review' and
-        wrote pause_state.json (the settled synthesis + why review was
-        required). This endpoint composes that synthesis + the director's
-        decision and guidance into a new seed and spawns a resume session
-        that routes straight to Operator (no re-deliberation).
-
-        decision: "approve" | "redirect" | "reject".
-        guidance: free-text directions / answers (optional).
-        context_files: documents to inject mid-review (e.g. the privacy
-          policy the agent asked for) -- reuses the same context ingestion
-          as a fresh session.
-
-        Mirrors the continuation endpoint's auth / quota / turn-clamp /
-        decrement / response. A resume is a full session (it runs Operator
-        and produces the artifact), so it is billed like one.
+        pause_type gate_review (4a): routes straight to Operator.
+        pause_type information (4b): restores deliberation history and continues.
         """
         user = current_user_optional(request)
         if user is None:
@@ -1819,24 +1888,27 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         if pause is None:
             raise HTTPException(
                 status_code=409,
-                detail="this session is not paused for human review "
+                detail="this session is not paused "
                        "(no pause_state.json found)",
             )
 
+        pause_type = pause.get("pause_type") or "gate_review"
+
         decision = (decision or "approve").strip().lower()
-        if decision not in ("approve", "redirect", "reject"):
+        if pause_type == "gate_review" and decision not in ("approve", "redirect", "reject"):
             raise HTTPException(
                 status_code=422,
                 detail="decision must be approve, redirect, or reject",
+            )
+        if pause_type == "information" and not guidance.strip() and not context_files:
+            raise HTTPException(
+                status_code=422,
+                detail="provide guidance text or at least one context document",
             )
 
         allowed, reason = auth.can_start_session(user)
         if not allowed:
             raise HTTPException(status_code=403, detail=reason)
-
-        composed_seed = _compose_resume_seed(pause, guidance, decision)
-        if len(composed_seed) > SEED_MAX_CHARS:
-            composed_seed = composed_seed[:SEED_MAX_CHARS]
 
         effective_turns = auth.effective_max_turns(user, max_turns)
         if effective_turns is not None and (effective_turns < 1 or effective_turns > 200):
@@ -1864,12 +1936,27 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
 
         denied = auth.skills_denied_for_user(user)
 
-        # The resume runs under the SAME governance profile as the paused
-        # session (the review settings still apply -- but the in-loop gate
-        # is skipped on resumed runs so it won't pause again).
         paused_proc = _read_process_info(paused_dir) or {}
         resume_profile_id = paused_proc.get("governance_profile_id") \
             or pause.get("governance_profile_id")
+
+        uploaded_names = [f["filename"] for f in files_data]
+
+        if pause_type == "information":
+            composed_seed = _compose_information_resume_seed(
+                pause, guidance, uploaded_names,
+            )
+            resume_after_review = False
+            resume_after_information = True
+            audit_event = "information_pause_resolved"
+        else:
+            composed_seed = _compose_resume_seed(pause, guidance, decision)
+            resume_after_review = True
+            resume_after_information = False
+            audit_event = "human_review_resolved"
+
+        if len(composed_seed) > SEED_MAX_CHARS:
+            composed_seed = composed_seed[:SEED_MAX_CHARS]
 
         result = spawn_adam_session(
             adam_root         = adam_root,
@@ -1884,23 +1971,25 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
             disable_skills    = denied,
             parent_session_id = paused_id,
             governance_profile_id = resume_profile_id,
-            resume_after_review = True,
+            resume_after_review = resume_after_review,
+            resume_after_information = resume_after_information,
         )
 
-        # Audit the resume on the PAUSED session's trail (the compliance
-        # record: who resolved the pause, how, with what guidance/docs).
         try:
             audit_path = paused_dir / "audit.jsonl"
             with audit_path.open("a", encoding="utf-8") as af:
-                af.write(json.dumps({
-                    "event":         "human_review_resolved",
-                    "decision":      decision,
+                audit_row: Dict[str, Any] = {
+                    "event":         audit_event,
                     "guidance":      guidance.strip(),
-                    "uploaded_docs": [f["filename"] for f in files_data],
+                    "uploaded_docs": uploaded_names,
                     "resumed_as":    result["session_id"],
                     "resolved_by":   user["username"],
+                    "pause_type":    pause_type,
                     "ts":            datetime.now().isoformat(timespec="seconds"),
-                }) + "\n")
+                }
+                if pause_type == "gate_review":
+                    audit_row["decision"] = decision
+                af.write(json.dumps(audit_row) + "\n")
         except Exception:
             pass
 
@@ -1930,6 +2019,92 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         return {
             "default_profile_id": governance.default_profile_id(),
             "profiles": governance.list_profiles(),
+        }
+
+    @app.get("/api/admin/governance")
+    def get_admin_governance(user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
+        """Slice 4.2 Phase 1: read-only governance config for admins.
+        Includes rulesets, profiles, plain-language summaries, which
+        fields are enforced at runtime, and validation of the live file."""
+        skill_universe = _discover_skill_universe(adam_root)
+        return governance.get_admin_view(skill_universe)
+
+    @app.post("/api/admin/governance/validate")
+    def validate_admin_governance(
+        payload: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(require_admin),
+    ) -> Dict[str, Any]:
+        """Slice 4.2: validate a proposed governance config without saving."""
+        skill_universe = _discover_skill_universe(adam_root)
+        normalized = governance.normalize_governance_data(payload)
+        return governance.validate_governance_data(normalized, skill_universe)
+
+    @app.put("/api/admin/governance")
+    def put_admin_governance(
+        payload: Dict[str, Any] = Body(...),
+        user: Dict[str, Any] = Depends(require_admin),
+    ) -> Dict[str, Any]:
+        """Slice 4.2 Phase 2: validate and save governance.json, then hot-reload."""
+        skill_universe = _discover_skill_universe(adam_root)
+        try:
+            governance.save_governance_data(payload, skill_universe)
+        except ValueError as e:
+            errors = e.args[0] if e.args else ["validation failed"]
+            if not isinstance(errors, list):
+                errors = [str(errors)]
+            raise HTTPException(
+                status_code=400,
+                detail={"errors": errors, "message": "governance validation failed"},
+            ) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return governance.get_admin_view(skill_universe)
+
+    class UserGovernanceProfileUpdate(BaseModel):
+        governance_profile: Optional[str] = None
+
+    @app.get("/api/admin/users")
+    def get_admin_users(user: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
+        """Slice 4.2 Phase 3: list users for governance profile assignment."""
+        profiles = governance.list_profiles()
+        return {
+            "users": auth.admin_user_summaries(),
+            "default_profile_id": governance.default_profile_id(),
+            "profiles": profiles,
+        }
+
+    @app.patch("/api/admin/users/{username}/governance-profile")
+    def patch_user_governance_profile(
+        username: str,
+        body: UserGovernanceProfileUpdate,
+        admin: Dict[str, Any] = Depends(require_admin),
+    ) -> Dict[str, Any]:
+        """Assign or clear a user's governance profile (stored on users.json)."""
+        target = auth.get_user(username)
+        if target is None:
+            raise HTTPException(status_code=404, detail="user not found")
+
+        profile_id = body.governance_profile
+        if profile_id is not None and profile_id.strip() == "":
+            profile_id = None
+        if profile_id is not None:
+            valid_ids = {p.get("id") for p in governance.list_profiles()}
+            if profile_id not in valid_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unknown governance profile: {profile_id!r}",
+                )
+
+        try:
+            auth.set_user_governance_profile(username, profile_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="user not found") from None
+
+        updated = auth.get_user(username)
+        return {
+            "username": username,
+            "governance_profile": updated.get("governance_profile"),
+            "effective_assigned_profile": auth.assigned_governance_profile(updated),
         }
 
     @app.get("/api/sessions/{session_id}/process_logs")
@@ -2028,20 +2203,49 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         if user is None:
             raise HTTPException(status_code=401, detail="not authenticated")
         sdir = resolve_session_dir(user, session_id)
-        path = sdir / "verification.jsonl"
-        if not path.exists():
-            return {"verifications": []}
-        records: List[Dict[str, Any]] = []
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except Exception:
-                    continue
-        return {"verifications": records}
+        claims = verification.load_claims(sdir)
+        return {
+            "claims":       claims,
+            "verifications": claims,
+            "summary":      verification.summarize_claims(claims),
+        }
+
+    class VerificationOverrideBody(BaseModel):
+        claim_id: str
+        status:   str
+        reason:   str
+        feedback: Optional[str] = None
+
+    @app.post("/api/sessions/{session_id}/verifications/override")
+    def post_verification_override(
+        session_id: str,
+        body: VerificationOverrideBody,
+        admin: Dict[str, Any] = Depends(require_admin),
+    ) -> Dict[str, Any]:
+        """Admin override of a Truthseeker verdict with audit trail."""
+        sdir = resolve_session_dir(admin, session_id)
+        feedback_dir = gui_root / "data"
+        try:
+            override = verification.save_override(
+                session_dir=sdir,
+                session_id=session_id,
+                feedback_dir=feedback_dir,
+                claim_id=body.claim_id.strip(),
+                admin_username=admin.get("username", "admin"),
+                status=body.status,
+                reason=body.reason,
+                feedback=body.feedback,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        claims = verification.load_claims(sdir)
+        return {
+            "ok":       True,
+            "override": override,
+            "claims":   claims,
+            "summary":  verification.summarize_claims(claims),
+        }
 
     @app.get("/api/sessions/{session_id}/skills")
     def get_skill_invocations(session_id: str, request: Request) -> Dict[str, Any]:

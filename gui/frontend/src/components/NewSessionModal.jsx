@@ -103,11 +103,16 @@ export function NewSessionModal({ onClose, onCreated, user, continuationFrom = n
         if (cancelled) return
         const list = Array.isArray(data?.profiles) ? data.profiles : []
         setProfiles(list)
-        setProfileId(data?.default_profile_id || (list[0]?.id ?? ''))
+        const fallback = data?.default_profile_id || (list[0]?.id ?? '')
+        // Pilots with an assigned profile see it locked in the picker.
+        const assigned = isPilot && user?.governance_profile
+          ? user.governance_profile
+          : fallback
+        setProfileId(assigned)
       })
       .catch(() => { /* picker hidden on failure; default applies */ })
     return () => { cancelled = true }
-  }, [])
+  }, [isPilot, user?.governance_profile])
 
   // Keyboard shortcuts
   useEffect(() => {

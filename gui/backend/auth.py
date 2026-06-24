@@ -62,7 +62,7 @@ import secrets
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     import bcrypt
@@ -487,6 +487,69 @@ def list_roles() -> Dict[str, Dict[str, Any]]:
     """Return all roles. Used by manage_users.py for validation prompts."""
     db = load_users_db()
     return db.get("roles", {})
+
+
+def is_quota_locked_user(user: Dict[str, Any]) -> bool:
+    """True for pilots (fixed turn quota) — governance profile is server-enforced."""
+    return user.get("max_turns_per_session", UNLIMITED) != UNLIMITED
+
+
+def assigned_governance_profile(user: Dict[str, Any]) -> Optional[str]:
+    """The governance profile id assigned to this user, if any (user record
+    then role fallback). Does not resolve to default."""
+    assigned = user.get("governance_profile")
+    if assigned:
+        return str(assigned)
+    role = user.get("_role", {})
+    role_profile = role.get("governance_profile")
+    return str(role_profile) if role_profile else None
+
+
+def set_user_governance_profile(username: str,
+                                governance_profile: Optional[str]) -> Dict[str, Any]:
+    """
+    Set or clear a user's assigned governance profile. Pass None to remove
+    the assignment (user falls back to role default, then system default).
+    """
+    def _mod(user: Dict[str, Any]) -> None:
+        if governance_profile is None:
+            user.pop("governance_profile", None)
+        else:
+            user["governance_profile"] = governance_profile
+
+    return update_user(username, _mod)
+
+
+def admin_user_summaries() -> List[Dict[str, Any]]:
+    """
+    Sanitized user list for the admin UI. Omits password hashes and
+    expands role-derived fields the admin needs to see.
+    """
+    db = load_users_db()
+    users = db.get("users", {})
+    roles = db.get("roles", {})
+    out: List[Dict[str, Any]] = []
+    for username, rec in users.items():
+        role_name = rec.get("role", "")
+        role_def = roles.get(role_name, {})
+        locked = rec.get("max_turns_per_session", UNLIMITED) != UNLIMITED
+        user_profile = rec.get("governance_profile")
+        role_profile = role_def.get("governance_profile")
+        out.append({
+            "username":              username,
+            "display_name":          rec.get("display_name", username),
+            "email":                 rec.get("email", ""),
+            "role":                  role_name,
+            "status":                rec.get("status", "active"),
+            "sessions_remaining":    rec.get("sessions_remaining", 0),
+            "max_turns_per_session": rec.get("max_turns_per_session", 0),
+            "governance_profile":    user_profile,
+            "role_governance_profile": role_profile,
+            "governance_profile_locked": locked,
+            "effective_assigned_profile": user_profile or role_profile,
+        })
+    out.sort(key=lambda u: (u["role"] != "pilot", u["username"]))
+    return out
 
 
 # ============================================================

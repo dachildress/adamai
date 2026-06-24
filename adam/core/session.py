@@ -107,6 +107,7 @@ EVENT_TYPES = frozenset({
     "director_message_error",
     "continuation_granted",
     "continuation_denied",
+    "awaiting_information",
     "session_ended",
 })
 
@@ -692,6 +693,8 @@ def format_director_transcript_entry(msg: DirectorMessage, display_name: str) ->
 class StopState:
     wrap_up = False
     hard_stop = False
+    governance_boundary: Optional[str] = None
+    refusal_termination: Optional[str] = None
 
 
 def handle_sigint(signum: int, frame: Any) -> None:

@@ -300,6 +300,15 @@ from adam.core.loop import (
     _summarize_sentinel_concerns,
     _build_session_state,
     run_deliberation_loop,
+    _LoopState,
+)
+from adam.core.governance_invariants import (
+    GOVERNANCE_BOUNDARY_END_REASON,
+    evaluate_self_modification_boundary,
+)
+from adam.core.empty_termination import (
+    REFUSAL_TERMINATED_END_REASON,
+    evaluate_unsafe_execution_boundary,
 )
 
 # ============================================================
@@ -998,22 +1007,79 @@ def main() -> None:
     # main()'s scope. The function returns a _LoopState whose scalar
     # fields populate the local names below for the post-loop summary
     # logging and session_state.json construction.
-    state = run_deliberation_loop(
-        ctx, args,
-        agents=agents,
-        models=models,
-        providers=providers,
-        primes=primes,
-        history=history,
-        wrap_up=wrap_up,
-        sentinel_reg=sentinel_reg,
-        director=director,
-        skill_catalog=skill_catalog,
-        skill_runtime=skill_runtime,
-        searxng_url=searxng_url,
-        context_files_by_id=context_files_by_id,
-        context_files_by_filename=context_files_by_filename,
-    )
+    StopState.governance_boundary = None
+    StopState.refusal_termination = None
+    _seed_boundary_reason = evaluate_self_modification_boundary(args.seed)
+    if not _seed_boundary_reason and background_block:
+        _seed_boundary_reason = evaluate_self_modification_boundary(background_block)
+
+    _unsafe_reason = None
+    if not _seed_boundary_reason:
+        _unsafe_reason = evaluate_unsafe_execution_boundary(args.seed)
+        if not _unsafe_reason and background_block:
+            _unsafe_reason = evaluate_unsafe_execution_boundary(background_block)
+
+    if _seed_boundary_reason:
+        log(">>> GOVERNANCE BOUNDARY: session stopped before deliberation")
+        log(f"    Reason: {_seed_boundary_reason}")
+        log()
+        ctx.emit_event("governance_boundary_blocked", {
+            "turn":   0,
+            "source": "seed",
+            "reason": _seed_boundary_reason,
+        })
+        audit({
+            "turn":   0,
+            "event":  "governance_boundary_blocked",
+            "source": "seed",
+            "reason": _seed_boundary_reason,
+            "ts":     datetime.now().isoformat(timespec="seconds"),
+        })
+        state = _LoopState(
+            end_reason=GOVERNANCE_BOUNDARY_END_REASON,
+            governance_boundary_blocked=True,
+            governance_boundary_reason=_seed_boundary_reason,
+        )
+        director.stop_polling()
+    elif _unsafe_reason:
+        log(">>> REFUSAL TERMINATION: session stopped before deliberation")
+        log(f"    Reason: {_unsafe_reason}")
+        log()
+        ctx.emit_event("refusal_terminated", {
+            "turn":   0,
+            "source": "seed",
+            "reason": _unsafe_reason,
+        })
+        audit({
+            "turn":   0,
+            "event":  "refusal_terminated",
+            "source": "seed",
+            "reason": _unsafe_reason,
+            "ts":     datetime.now().isoformat(timespec="seconds"),
+        })
+        state = _LoopState(
+            end_reason=REFUSAL_TERMINATED_END_REASON,
+            refusal_terminated=True,
+            refusal_reason=_unsafe_reason,
+        )
+        director.stop_polling()
+    else:
+        state = run_deliberation_loop(
+            ctx, args,
+            agents=agents,
+            models=models,
+            providers=providers,
+            primes=primes,
+            history=history,
+            wrap_up=wrap_up,
+            sentinel_reg=sentinel_reg,
+            director=director,
+            skill_catalog=skill_catalog,
+            skill_runtime=skill_runtime,
+            searxng_url=searxng_url,
+            context_files_by_id=context_files_by_id,
+            context_files_by_filename=context_files_by_filename,
+        )
     end_reason               = state.end_reason
     synthesizer_wrap_up_text = state.synthesizer_wrap_up_text
     operator_wrap_up_text    = state.operator_wrap_up_text
@@ -1130,6 +1196,12 @@ def main() -> None:
             policy_block_reason=state.policy_block_reason,
             awaiting_human_review=state.awaiting_human_review,
             review_reason=state.review_reason,
+            awaiting_information=state.awaiting_information,
+            information_reason=state.information_reason,
+            governance_boundary_blocked=state.governance_boundary_blocked,
+            governance_boundary_reason=state.governance_boundary_reason,
+            refusal_terminated=state.refusal_terminated,
+            refusal_reason=state.refusal_reason,
         )
         with open(session_state_path, "w", encoding="utf-8") as f:
             json.dump(session_state, f, indent=2, default=str)

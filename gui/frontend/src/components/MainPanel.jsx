@@ -110,6 +110,27 @@ function GovernanceBanner({ sessionMeta, onReview }) {
     )
   }
 
+  if (status === 'awaiting_information') {
+    return (
+      <div className="gov-banner gov-banner--review">
+        <div className="gov-banner__body">
+          <div className="gov-banner__title">Information needed</div>
+          <div className="gov-banner__reason">
+            {sessionMeta.information_reason
+              || 'Deliberation paused until you provide missing input.'}
+          </div>
+        </div>
+        <button
+          className="btn btn--primary gov-banner__action"
+          onClick={() => onReview && onReview(sessionMeta)}
+          type="button"
+        >
+          Provide &amp; continue
+        </button>
+      </div>
+    )
+  }
+
   if (status === 'policy_blocked') {
     return (
       <div className="gov-banner gov-banner--blocked">
@@ -118,6 +139,34 @@ function GovernanceBanner({ sessionMeta, onReview }) {
           <div className="gov-banner__reason">
             {sessionMeta.policy_block_reason
               || 'The governance profile for this session did not allow the planned action.'}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (status === 'governance_boundary_blocked') {
+    return (
+      <div className="gov-banner gov-banner--blocked">
+        <div className="gov-banner__body">
+          <div className="gov-banner__title">Governance boundary</div>
+          <div className="gov-banner__reason">
+            {sessionMeta.governance_boundary_reason
+              || 'This request would modify ADAM capabilities — a human-only action.'}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (status === 'refusal_terminated') {
+    return (
+      <div className="gov-banner gov-banner--blocked">
+        <div className="gov-banner__body">
+          <div className="gov-banner__title">Refused — no artifact</div>
+          <div className="gov-banner__reason">
+            {sessionMeta.refusal_reason
+              || 'The requested action was refused. ADAM ended without producing anything.'}
           </div>
         </div>
       </div>
@@ -234,7 +283,10 @@ function StatusGrid({ state, sessionMeta }) {
   // now do too.
   const govStatus   = sessionMeta?.status
   const isPaused    = govStatus === 'awaiting_human_review'
+      || govStatus === 'awaiting_information'
   const isBlocked   = govStatus === 'policy_blocked'
+      || govStatus === 'governance_boundary_blocked'
+      || govStatus === 'refusal_terminated'
   const profileId   = sessionMeta?.governance_profile_id || null
   const reviewMode  = isPaused ? 'required' : (profileId ? 'configured' : null)
 
@@ -470,8 +522,14 @@ function Transcript({ state }) {
           <div className="turn__body">
             {state.end_reason === 'awaiting_human_review' ? (
               <>Paused for review before execution. Use <strong>Review &amp; resume</strong> above to approve, redirect, or decline.</>
+            ) : state.end_reason === 'awaiting_information' ? (
+              <>Paused mid-deliberation for missing information. Use <strong>Provide &amp; continue</strong> above to supply what was requested.</>
             ) : state.end_reason === 'policy_blocked' ? (
               <>Stopped by policy before execution. Operator did not run and no artifact was produced.</>
+            ) : state.end_reason === 'governance_boundary_blocked' ? (
+              <>Stopped at a governance boundary before execution. Operator did not run and no artifact was produced.</>
+            ) : state.end_reason === 'refusal_terminated' ? (
+              <>The requested action was refused. Operator did not run and no artifact was produced.</>
             ) : (
               <>
                 Session complete. {state.final_summary?.skill_summary

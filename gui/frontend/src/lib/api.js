@@ -87,7 +87,32 @@ export async function fetchSessionEvents(sessionId) {
 
 export async function fetchSessionVerifications(sessionId) {
   const r = await fetch(`${API_BASE}/sessions/${sessionId}/verifications`, { credentials: 'include' })
-  if (!r.ok) return { verifications: [] }
+  if (!r.ok) return { claims: [], verifications: [], summary: { total: 0, status_counts: {} } }
+  return r.json()
+}
+
+export async function overrideVerificationClaim(sessionId, { claimId, status, reason, feedback }) {
+  const r = await fetch(`${API_BASE}/sessions/${sessionId}/verifications/override`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      claim_id: claimId,
+      status,
+      reason,
+      feedback: feedback || null,
+    }),
+  })
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`
+    try {
+      const body = await r.json()
+      if (body?.detail) detail = String(body.detail)
+    } catch {}
+    const err = new Error(detail)
+    err.status = r.status
+    throw err
+  }
   return r.json()
 }
 
@@ -240,6 +265,119 @@ export async function fetchGovernanceProfiles() {
   const r = await fetch(`${API_BASE}/governance/profiles`, { credentials: 'include' })
   if (!r.ok) {
     throw new Error(`HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
+
+// Slice 4.2 Phase 1: full governance config for the admin view (admin only).
+export async function fetchGovernanceAdmin() {
+  const r = await fetch(`${API_BASE}/admin/governance`, { credentials: 'include' })
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`
+    try {
+      const body = await r.json()
+      if (body?.detail) detail = String(body.detail)
+    } catch {}
+    const err = new Error(detail)
+    err.status = r.status
+    throw err
+  }
+  return r.json()
+}
+
+
+export async function validateGovernanceConfig(config) {
+  const r = await fetch(`${API_BASE}/admin/governance/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(config),
+  })
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`
+    try {
+      const body = await r.json()
+      if (body?.detail) {
+        detail = typeof body.detail === 'string'
+          ? body.detail
+          : JSON.stringify(body.detail)
+      }
+    } catch {}
+    const err = new Error(detail)
+    err.status = r.status
+    throw err
+  }
+  return r.json()
+}
+
+
+export async function saveGovernanceConfig(config) {
+  const r = await fetch(`${API_BASE}/admin/governance`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(config),
+  })
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`
+    let errors = null
+    try {
+      const body = await r.json()
+      if (body?.detail?.errors) errors = body.detail.errors
+      if (body?.detail?.message) detail = body.detail.message
+      else if (body?.detail) {
+        detail = typeof body.detail === 'string'
+          ? body.detail
+          : JSON.stringify(body.detail)
+      }
+    } catch {}
+    const err = new Error(detail)
+    err.status = r.status
+    err.errors = errors
+    throw err
+  }
+  return r.json()
+}
+
+
+export async function fetchAdminUsers() {
+  const r = await fetch(`${API_BASE}/admin/users`, { credentials: 'include' })
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`
+    try {
+      const body = await r.json()
+      if (body?.detail) detail = String(body.detail)
+    } catch {}
+    const err = new Error(detail)
+    err.status = r.status
+    throw err
+  }
+  return r.json()
+}
+
+
+export async function patchUserGovernanceProfile(username, governanceProfile) {
+  const r = await fetch(
+    `${API_BASE}/admin/users/${encodeURIComponent(username)}/governance-profile`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        governance_profile: governanceProfile || null,
+      }),
+    },
+  )
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`
+    try {
+      const body = await r.json()
+      if (body?.detail) detail = String(body.detail)
+    } catch {}
+    const err = new Error(detail)
+    err.status = r.status
+    throw err
   }
   return r.json()
 }

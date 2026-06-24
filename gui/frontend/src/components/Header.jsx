@@ -5,7 +5,7 @@
  *   - sessions_remaining indicator (pilots only)
  *   - logout button next to the avatar
  */
-export function Header({ user, state, selectedSession, connectionStatus, onLogout }) {
+export function Header({ user, state, selectedSession, connectionStatus, onLogout, onOpenGovernance }) {
   const isActive = state && !state.ended && state.session_id != null
   const sessionStatus = state?.ended ? 'complete' : (isActive ? 'active' : 'idle')
 
@@ -87,6 +87,16 @@ export function Header({ user, state, selectedSession, connectionStatus, onLogou
       </div>
 
       <div className="header__director">
+        {user?.role === 'admin' && onOpenGovernance && (
+          <button
+            type="button"
+            className="header__gov-btn"
+            onClick={onOpenGovernance}
+            title="View and manage governance profiles"
+          >
+            Governance
+          </button>
+        )}
         <div className="header__director-info">
           <div className="header__director-name">{displayName}</div>
           <div className="header__director-role">{roleLabel}</div>

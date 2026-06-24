@@ -2,23 +2,13 @@ import { useState, useRef, useEffect } from 'react'
 import { resumeSession } from '../lib/api'
 
 /**
- * ResumeModal — resolve a session paused at the human-review gate (Slice 4a).
- *
- * Three zones, matching the governance design:
- *   1. Why it paused — the agent's reason (read-only), plus the settled
- *      plan it's waiting to act on.
- *   2. Your guidance — free-text direction the agent applies on resume.
- *   3. Documents — optional files to hand the agent (e.g. the privacy
- *      policy it asked for), injected as context on resume.
- *
- * The director picks a decision (Approve / Redirect / Decline) and resumes.
- * Resuming spawns a NEW session that routes straight to Operator with the
- * guidance and documents composed in; onResumed hands that new session id
- * back to the caller.
+ * ResumeModal — resolve a paused session (Slice 4a gate review or Slice 4b
+ * information pause).
  */
 export function ResumeModal({ paused, onClose, onResumed }) {
-  // `paused` carries: session_id, review_reason, and (optionally) the
-  // settled synthesis preview from session state.
+  const isInformation = paused.pause_type === 'information'
+      || paused.pause_type === 'awaiting_information'
+
   const [decision, setDecision]   = useState('approve')
   const [guidance, setGuidance]   = useState('')
   const [files, setFiles]         = useState([])
@@ -60,8 +50,12 @@ export function ResumeModal({ paused, onClose, onResumed }) {
 
   async function submit() {
     if (submitting) return
-    // Redirect and Decline want a reason; nudge but don't hard-block.
-    if (decision === 'redirect' && !guidance.trim()) {
+    if (isInformation) {
+      if (!guidance.trim() && files.length === 0) {
+        setError('Add guidance or at least one document the agents requested.')
+        return
+      }
+    } else if (decision === 'redirect' && !guidance.trim()) {
       setError('Add a line of guidance so the agent knows how to redirect.')
       return
     }
@@ -69,7 +63,7 @@ export function ResumeModal({ paused, onClose, onResumed }) {
     setError(null)
     try {
       const result = await resumeSession(paused.session_id, {
-        decision,
+        decision: isInformation ? 'approve' : decision,
         guidance: guidance.trim(),
         contextFiles: files,
       })
@@ -92,22 +86,25 @@ export function ResumeModal({ paused, onClose, onResumed }) {
     { id: 'reject',   label: 'Decline',  hint: 'Don\u2019t produce it; record the decision.' },
   ]
 
+  const pauseReason = isInformation
+    ? (paused.information_reason || 'Deliberation paused until missing input is provided.')
+    : (paused.review_reason || 'This session is waiting for your review before it acts.')
+
   return (
     <div className="modal-backdrop" onClick={() => !submitting && onClose()}>
       <div className="modal modal--review" role="dialog" aria-modal="true"
            onClick={e => e.stopPropagation()}>
         <div className="modal__header">
-          <h2 className="modal__title">Review required</h2>
+          <h2 className="modal__title">
+            {isInformation ? 'Provide information' : 'Review required'}
+          </h2>
           <button className="modal__close" onClick={onClose} disabled={submitting}>✕</button>
         </div>
 
-        {/* Zone 1 — why it paused */}
         <div className="review-zone">
           <div className="review-zone__label">Why this paused</div>
-          <div className="review-zone__reason">
-            {paused.review_reason || 'This session is waiting for your review before it acts.'}
-          </div>
-          {paused.synthesis_preview && (
+          <div className="review-zone__reason">{pauseReason}</div>
+          {!isInformation && paused.synthesis_preview && (
             <details className="review-zone__plan">
               <summary>The plan it\u2019s waiting to act on</summary>
               <div className="review-zone__plan-text">{paused.synthesis_preview}</div>
@@ -115,29 +112,29 @@ export function ResumeModal({ paused, onClose, onResumed }) {
           )}
         </div>
 
-        {/* Decision */}
-        <div className="review-zone">
-          <div className="review-zone__label">Your decision</div>
-          <div className="review-decisions">
-            {decisions.map(d => (
-              <button
-                key={d.id}
-                className={`review-decision ${decision === d.id ? 'review-decision--active' : ''}`}
-                onClick={() => setDecision(d.id)}
-                disabled={submitting}
-                type="button"
-              >
-                <span className="review-decision__label">{d.label}</span>
-                <span className="review-decision__hint">{d.hint}</span>
-              </button>
-            ))}
+        {!isInformation && (
+          <div className="review-zone">
+            <div className="review-zone__label">Your decision</div>
+            <div className="review-decisions">
+              {decisions.map(d => (
+                <button
+                  key={d.id}
+                  className={`review-decision ${decision === d.id ? 'review-decision--active' : ''}`}
+                  onClick={() => setDecision(d.id)}
+                  disabled={submitting}
+                  type="button"
+                >
+                  <span className="review-decision__label">{d.label}</span>
+                  <span className="review-decision__hint">{d.hint}</span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Zone 2 — guidance */}
         <div className="review-zone">
           <div className="review-zone__label">
-            Guidance {decision === 'approve' ? '(optional)' : ''}
+            {isInformation ? 'Your answer' : `Guidance ${decision === 'approve' ? '(optional)' : ''}`}
           </div>
           <textarea
             ref={guidanceRef}
@@ -146,17 +143,20 @@ export function ResumeModal({ paused, onClose, onResumed }) {
             value={guidance}
             onChange={e => setGuidance(e.target.value)}
             placeholder={
-              decision === 'reject'
-                ? 'Optional: note why you\u2019re declining.'
-                : 'Anything the agent should apply before producing the deliverable.'
+              isInformation
+                ? 'Paste the policy, data, or direction the agents asked for.'
+                : decision === 'reject'
+                  ? 'Optional: note why you\u2019re declining.'
+                  : 'Anything the agent should apply before producing the deliverable.'
             }
             disabled={submitting}
           />
         </div>
 
-        {/* Zone 3 — documents */}
         <div className="review-zone">
-          <div className="review-zone__label">Documents (optional)</div>
+          <div className="review-zone__label">
+            Documents {isInformation ? '' : '(optional)'}
+          </div>
           <input
             ref={fileInputRef}
             type="file"
@@ -199,7 +199,9 @@ export function ResumeModal({ paused, onClose, onResumed }) {
             Cancel
           </button>
           <button className="btn btn--primary" onClick={submit} disabled={submitting}>
-            {submitting ? 'Resuming…' : 'Resume session'}
+            {submitting
+              ? 'Resuming…'
+              : isInformation ? 'Continue deliberation' : 'Resume session'}
           </button>
         </div>
       </div>

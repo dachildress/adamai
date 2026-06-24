@@ -107,6 +107,14 @@ def parse_args() -> argparse.Namespace:
                         "settled (composed into the seed). Skip deliberation "
                         "and route directly to Operator. The review gate is "
                         "not re-evaluated on a resumed run.")
+    p.add_argument("--resume-after-information", action="store_true",
+                   help="Slice 4b: resume deliberation after a mid-loop "
+                        "information pause. Restores history from the parent "
+                        "session's pause_state.json and continues from the "
+                        "paused turn.")
+    p.add_argument("--parent-session-id", type=str, default=None,
+                   help="Parent session id for resume or continuation lineage. "
+                        "Required for --resume-after-information.")
     # Context Loader flags. Pass 1 accepts these and enumerates files but
     # does not yet inject anything into deliberation (loader is Pass 2).
     p.add_argument("--context-dir",      type=str,   default=None,
