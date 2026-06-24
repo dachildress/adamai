@@ -7,7 +7,7 @@ Covers:
   - GET /api/admin/governance: admin-only read endpoint
   - POST /api/admin/governance/validate: admin-only dry-run validation
 
-Run: python test_governance_admin.py
+Run: python tests/test_governance_admin.py
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 GUI_ROOT = ROOT / "gui"
 sys.path.insert(0, str(GUI_ROOT))
 sys.path.insert(0, str(GUI_ROOT / "backend"))

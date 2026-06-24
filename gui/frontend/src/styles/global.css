@@ -377,6 +377,7 @@ a { color: inherit; text-decoration: none; }
 .session-item__dot--errored  { background: var(--coral); }
 .session-item__dot--starting { background: var(--amber, #d97706); animation: starting-pulse 1s ease-in-out infinite; }
 .session-item__dot--awaiting_human_review { background: var(--amber); animation: pulse 2s infinite; }
+.session-item__dot--review_resolved       { background: var(--jade); }
 .session-item__dot--policy_blocked        { background: var(--rose); }
 
 @keyframes starting-pulse {
@@ -2694,6 +2695,21 @@ a { color: inherit; text-decoration: none; }
   background: var(--rose-glow);
   border: 1px solid rgba(251, 113, 133, 0.35);
 }
+.session-item__badge--resolved {
+  color: var(--jade);
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+}
+
+.review-toast {
+  margin: 0 16px 8px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  color: var(--jade);
+  font-size: 13px;
+}
 
 /* Governance banner in the main panel */
 .gov-banner {
@@ -2713,6 +2729,10 @@ a { color: inherit; text-decoration: none; }
   background: var(--rose-glow);
   border-color: rgba(251, 113, 133, 0.35);
 }
+.gov-banner--resolved {
+  background: rgba(52, 211, 153, 0.08);
+  border-color: rgba(52, 211, 153, 0.3);
+}
 .gov-banner__body { flex: 1; }
 .gov-banner__title {
   font-size: 13px;
@@ -2722,6 +2742,16 @@ a { color: inherit; text-decoration: none; }
 }
 .gov-banner--review  .gov-banner__title { color: var(--amber); }
 .gov-banner--blocked .gov-banner__title { color: var(--rose); }
+.gov-banner--resolved .gov-banner__title { color: var(--jade); }
+.gov-banner__link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--mint);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
 .gov-banner__reason {
   font-size: 13px;
   line-height: 1.45;

@@ -21,9 +21,10 @@ After this patch:
 """
 import sys
 import os
+from pathlib import Path
 
-# Add the directory containing the patched runtime to sys.path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 # We need to import without triggering any of the runtime's startup
 # behaviors. The patched file is designed to be imported safely --
@@ -31,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import importlib.util
 spec = importlib.util.spec_from_file_location(
     "adam_runtime",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "adam_agent_chat.py")
+    str(ROOT / "adam_agent_chat.py")
 )
 adam = importlib.util.module_from_spec(spec)
 # We need to allow the module's top-level code to run, but it has

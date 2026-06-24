@@ -49,6 +49,7 @@ export default function App() {
   const [continuationFrom, setContinuationFrom] = useState(null)
   // Slice 4a: the session currently being reviewed/resumed (or null).
   const [reviewPaused, setReviewPaused] = useState(null)
+  const [reviewMessage, setReviewMessage] = useState(null)
   const [showGovernanceAdmin, setShowGovernanceAdmin] = useState(false)
 
   const [state, dispatch] = useReducer(sessionReducer, EMPTY_STATE)
@@ -230,6 +231,12 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, sessions, connectionStatus, tick])
 
+  useEffect(() => {
+    if (!reviewMessage) return undefined
+    const t = setTimeout(() => setReviewMessage(null), 6000)
+    return () => clearTimeout(t)
+  }, [reviewMessage])
+
   // ---- Render ----
 
   // Backend genuinely unreachable (network error, not 401):
@@ -275,6 +282,9 @@ export default function App() {
         onLogout={handleLogout}
         onOpenGovernance={() => setShowGovernanceAdmin(true)}
       />
+      {reviewMessage && (
+        <div className="review-toast" role="status">{reviewMessage}</div>
+      )}
       <Sidebar
         sessions={sessions}
         selectedSessionId={selectedId}
@@ -295,6 +305,7 @@ export default function App() {
         sessionMeta={sessions.find(s => s.session_id === selectedId)}
         selectedSessionId={selectedId}
         onReview={(meta) => setReviewPaused(meta)}
+        onSelectSession={setSelectedId}
       />
       <PromptBar
         sessionId={selectedId}
@@ -325,9 +336,17 @@ export default function App() {
           onClose={() => setReviewPaused(null)}
           onResumed={async (result) => {
             setReviewPaused(null)
+            const decision = result?.review_decision || 'approved'
+            setReviewMessage(
+              result?.declined
+                ? 'Review declined — session closed.'
+                : `Review ${decision} — session resumed.`,
+            )
             await refreshSessions()
             await refreshUser()
-            if (result?.session_id) setSelectedId(result.session_id)
+            if (!result?.declined && result?.session_id) {
+              setSelectedId(result.session_id)
+            }
           }}
         />
       )}

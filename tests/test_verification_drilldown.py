@@ -1,14 +1,15 @@
 """
 Tests for verifier claims drill-down and admin override (handoff §4.1).
 
-Run: python test_verification_drilldown.py
+Run: python tests/test_verification_drilldown.py
 """
 import json
 import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "gui" / "backend"))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "gui" / "backend"))
 
 import verification
 

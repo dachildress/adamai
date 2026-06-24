@@ -16,6 +16,8 @@ want to confirm that:
       the session cleanly.
 """
 
+# Run: python tests/test_continuation_budget.py
+
 def simulate_loop(deliberation_cap: int, grant_plan: dict, effective_max: int = 4):
     """
     grant_plan: dict mapping turn_number -> bool (whether Operator

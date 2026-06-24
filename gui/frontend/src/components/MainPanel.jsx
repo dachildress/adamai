@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { ROUTING_REASON_LABELS, tokenizeContent, formatDuration, formatTimestamp, formatElapsed } from '../lib/agents'
 import { artifactUrl, fetchProcessLogs } from '../lib/api'
 
-export function MainPanel({ state, sessionMeta, selectedSessionId, onReview }) {
+export function MainPanel({ state, sessionMeta, selectedSessionId, onReview, onSelectSession }) {
   // Part 9: distinguish three "no events yet" cases:
   //   - User hasn't selected anything: nothing's selected
   //   - User selected a session, status=starting: show waiting message
@@ -71,7 +71,11 @@ export function MainPanel({ state, sessionMeta, selectedSessionId, onReview }) {
         state={state}
         sessionMeta={sessionMeta}
       />
-      <GovernanceBanner sessionMeta={sessionMeta} onReview={onReview} />
+      <GovernanceBanner
+        sessionMeta={sessionMeta}
+        onReview={onReview}
+        onSelectSession={onSelectSession}
+      />
       <StatusGrid state={state} sessionMeta={sessionMeta} />
       <ContextRow state={state} />
       <Progress state={state} />
@@ -85,9 +89,74 @@ export function MainPanel({ state, sessionMeta, selectedSessionId, onReview }) {
 // banner. For a paused session it offers "Review & resume", which opens the
 // resume modal. Driven by the sidebar summary (sessionMeta), which carries
 // status + reason from session_state's governance block.
-function GovernanceBanner({ sessionMeta, onReview }) {
+function GovernanceBanner({ sessionMeta, onReview, onSelectSession }) {
   if (!sessionMeta) return null
   const status = sessionMeta.status
+
+  if (status === 'review_resolved') {
+    const label = {
+      approve: 'Approved',
+      redirect: 'Redirected',
+      declined: 'Declined',
+      provided: 'Info provided',
+    }[sessionMeta.review_decision] || sessionMeta.review_decision || 'Resolved'
+    const childId = sessionMeta.resumed_as
+    return (
+      <div className="gov-banner gov-banner--resolved">
+        <div className="gov-banner__body">
+          <div className="gov-banner__title">Reviewed → {label}</div>
+          {childId ? (
+            <div className="gov-banner__reason">
+              Resumed as session{' '}
+              {onSelectSession ? (
+                <button
+                  type="button"
+                  className="gov-banner__link"
+                  onClick={() => onSelectSession(childId)}
+                >
+                  {childId.slice(0, 8)}…
+                </button>
+              ) : (
+                <code>{childId.slice(0, 8)}…</code>
+              )}
+            </div>
+          ) : (
+            <div className="gov-banner__reason">No child session was created.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  if (sessionMeta.resumed_from_review && sessionMeta.parent_session_id) {
+    const label = {
+      approve: 'approved',
+      redirect: 'redirected',
+      provided: 'info provided',
+    }[sessionMeta.review_decision] || sessionMeta.review_decision || 'reviewed'
+    return (
+      <div className="gov-banner gov-banner--resolved">
+        <div className="gov-banner__body">
+          <div className="gov-banner__title">Resumed from reviewed parent</div>
+          <div className="gov-banner__reason">
+            Parent{' '}
+            {onSelectSession ? (
+              <button
+                type="button"
+                className="gov-banner__link"
+                onClick={() => onSelectSession(sessionMeta.parent_session_id)}
+              >
+                {sessionMeta.parent_session_id.slice(0, 8)}…
+              </button>
+            ) : (
+              <code>{sessionMeta.parent_session_id.slice(0, 8)}…</code>
+            )}
+            {' '}· decision: {label}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   if (status === 'awaiting_human_review') {
     return (
@@ -284,6 +353,7 @@ function StatusGrid({ state, sessionMeta }) {
   const govStatus   = sessionMeta?.status
   const isPaused    = govStatus === 'awaiting_human_review'
       || govStatus === 'awaiting_information'
+  const isReviewResolved = govStatus === 'review_resolved'
   const isBlocked   = govStatus === 'policy_blocked'
       || govStatus === 'governance_boundary_blocked'
       || govStatus === 'refusal_terminated'
@@ -295,6 +365,8 @@ function StatusGrid({ state, sessionMeta }) {
   let decisionLabel, decisionClass = 'status-card--ok', decisionIcon = '✓'
   if (isPaused) {
     decisionLabel = 'Paused'; decisionClass = 'status-card--review'; decisionIcon = '❚❚'
+  } else if (isReviewResolved) {
+    decisionLabel = 'Reviewed'; decisionClass = 'status-card--ok'; decisionIcon = '✓'
   } else if (isBlocked) {
     decisionLabel = 'Blocked'; decisionClass = 'status-card--blocked'; decisionIcon = '✕'
   } else if (state.ended) {

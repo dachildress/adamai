@@ -14,7 +14,7 @@ Cost: ~$0. No API calls. Runs in seconds.
 
 Usage:
     # Draft only (no SMTP transaction). Always safe.
-    python test_email_skill.py --action draft --to childrda@lcps.k12.va.us
+    python tests/test_email_skill.py --action draft --to childrda@lcps.k12.va.us
 
     # Actually send. Requires SMTP env vars and recipient on allowlist.
     python test_email_skill.py --action send --to childrda@lcps.k12.va.us
@@ -54,6 +54,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+ROOT = Path(__file__).resolve().parent.parent
 
 # ============================================================
 # .env loader (mirrors adam_agent_chat.py's loader exactly)
@@ -63,7 +64,7 @@ from typing import Any, Dict, List, Optional
 # like in adam_agent_chat.py, so a developer can override .env for a
 # single test run without editing the file.
 
-DOTENV_PATH = Path(".env")
+DOTENV_PATH = ROOT / ".env"
 
 
 def load_dotenv(path: Path = DOTENV_PATH) -> bool:
@@ -216,7 +217,7 @@ def call_handler(
     # Import the handler from the project's skills directory. We use
     # importlib so we don't pollute sys.path with the skills directory
     # globally -- the handler imports cleanly as a standalone module.
-    handler_path = Path("skills/email/handler.py")
+    handler_path = ROOT / "skills" / "email" / "handler.py"
     if not handler_path.exists():
         raise FileNotFoundError(
             f"Could not find {handler_path}. Run this script from the "
@@ -254,6 +255,12 @@ def call_handler(
 # ============================================================
 
 def main() -> int:
+    # Automated suite driver: manual SMTP smoke harness, not a unit test.
+    if len(sys.argv) == 1:
+        print("tests/test_email_skill.py")
+        print("  SKIP  CLI smoke harness (invoke with --to to run)")
+        return 0
+
     parser = argparse.ArgumentParser(
         description="Smoke-test ADAM's email skill without running agents.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -287,10 +294,10 @@ def main() -> int:
         help="Skip the attachment entirely (no file is attached).",
     )
     parser.add_argument(
-        "--artifacts-dir", default="./test_artifacts",
+        "--artifacts-dir", default=str(ROOT / "test_artifacts"),
         help="Directory where the test artifact is created and where "
              "the resulting .eml (for draft) is saved. Default: "
-             "./test_artifacts",
+             f"{ROOT / 'test_artifacts'}",
     )
     parser.add_argument(
         "--no-prepare-artifact", action="store_true",

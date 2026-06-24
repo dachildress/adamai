@@ -27,6 +27,16 @@ export function Sidebar({ sessions, selectedSessionId, onSelect, sessionInfo, on
     return s.status === 'complete'
   }
 
+  function reviewDecisionLabel(decision) {
+    const labels = {
+      approve: 'Approved',
+      redirect: 'Redirected',
+      declined: 'Declined',
+      provided: 'Info provided',
+    }
+    return labels[decision] || decision || 'Resolved'
+  }
+
   function handleContextMenu(e, s) {
     if (!onContinueSession) return
     e.preventDefault()
@@ -81,7 +91,7 @@ export function Sidebar({ sessions, selectedSessionId, onSelect, sessionInfo, on
                       className="session-item__lineage"
                       title={parent ? `Continued from: ${parent.title || s.parent_session_id.slice(0,8)}` : 'Continued from a prior session'}
                       style={{ marginRight: 4, color: 'var(--text-faint)' }}
-                    >↳</span>
+                    >{s.resumed_from_review ? '↺' : '↳'}</span>
                   )}
                   {s.title || s.session_id.slice(0, 8) + '...'}
                 </div>
@@ -95,6 +105,11 @@ export function Sidebar({ sessions, selectedSessionId, onSelect, sessionInfo, on
                         {s.status === 'awaiting_human_review' && (
                           <span className="session-item__badge session-item__badge--review">
                             needs review
+                          </span>
+                        )}
+                        {s.status === 'review_resolved' && (
+                          <span className="session-item__badge session-item__badge--resolved">
+                            reviewed → {reviewDecisionLabel(s.review_decision)}
                           </span>
                         )}
                         {s.status === 'awaiting_information' && (

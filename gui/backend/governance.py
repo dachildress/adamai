@@ -27,7 +27,7 @@ import os
 import tempfile
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Module-level cache, populated by init_governance().
 _GOVERNANCE_PATH: Optional[Path] = None
@@ -131,6 +131,79 @@ def get_policy_bounds(profile_id: Optional[str]) -> Dict[str, Any]:
     if bounds_id and bounds_id in bounds:
         return bounds[bounds_id]
     return dict(_FALLBACK_BOUNDS)
+
+
+class GovernanceResolutionError(Exception):
+    """Protected-profile governance could not be resolved; spawn must not proceed."""
+
+
+def is_protected_profile(profile_id: Optional[str]) -> bool:
+    """True when the profile's policy_bounds ruleset is non-standard.
+
+    Derived from loaded governance config (not hardcoded profile names).
+    Profiles referencing ``standard`` bounds are not protected and may
+    use permissive fallbacks when config is incomplete."""
+    profiles = _profiles()
+    pid = (profile_id or "").strip() or default_profile_id()
+    if profiles and pid in profiles:
+        return profiles[pid].get("policy_bounds_id") != "standard"
+    return False
+
+
+def resolve_spawn_governance(
+    profile_id: Optional[str],
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """
+    Resolve profile + policy bounds for session spawn.
+
+    Non-protected profiles (``standard`` bounds) keep the existing
+    permissive fallback behavior. Protected profiles fail closed when
+    the profile or its referenced ruleset cannot be resolved from config.
+
+    Raises:
+      ValueError: unknown explicit profile id (maps to HTTP 400).
+      GovernanceResolutionError: protected profile resolution failed (HTTP 500).
+    """
+    explicit = (profile_id or "").strip() or None
+    profiles = _profiles()
+
+    if explicit and profiles and explicit not in profiles:
+        raise ValueError(f"unknown governance profile: {explicit!r}")
+
+    if explicit and profiles and explicit in profiles:
+        resolved = explicit
+    elif explicit and not profiles:
+        if explicit not in (_FALLBACK_DEFAULT_ID, "general"):
+            raise GovernanceResolutionError(
+                f"governance config unavailable; cannot honor profile {explicit!r}"
+            )
+        resolved = _FALLBACK_DEFAULT_ID
+    else:
+        resolved = resolve_profile_id(profile_id)
+
+    if is_protected_profile(resolved):
+        if not profiles:
+            raise GovernanceResolutionError(
+                f"governance config unavailable; cannot spawn with protected "
+                f"profile {resolved!r}"
+            )
+        if resolved not in profiles:
+            raise GovernanceResolutionError(
+                f"protected governance profile {resolved!r} not found in configuration"
+            )
+        prof = profiles[resolved]
+        bounds_id = prof.get("policy_bounds_id")
+        bounds_map = _bounds()
+        if not bounds_id or bounds_id not in bounds_map:
+            raise GovernanceResolutionError(
+                f"policy bounds {bounds_id!r} for profile {resolved!r} "
+                "could not be resolved"
+            )
+        return resolved, dict(bounds_map[bounds_id]), dict(prof)
+
+    bounds = dict(get_policy_bounds(resolved))
+    profile = dict(get_profile(resolved))
+    return resolved, bounds, profile
 
 
 def list_profiles() -> List[Dict[str, Any]]:
