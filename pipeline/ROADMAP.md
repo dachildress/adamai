@@ -54,12 +54,25 @@ and APPROVAL_REQUIRED both prove no adapter construction; read-only uses the rea
 types. The Slice-1 `sentinel_stub.py` remains only as a vestige referenced by one
 Slice-1 unit test; the live flow no longer uses it.*
 
-**⬜ Slice 3 — Adapter interface + cost/health**
-Formalize the adapter contract every adapter implements: capability advertisement,
-health states (READY / DEGRADED / REINDEXING / OFFLINE / AUTHENTICATION_FAILED),
-adapter-supplied cost estimate, and the cost Sentinel predicate consuming it. SQLite
-adapter conforms to the new interface. (Before the skill, so the model later plans
-against a stable adapter contract.)
+**✅ Slice 3 — Adapter interface + cost/health**
+`adam/pipeline/adapter.py` defines the source-agnostic `Adapter` ABC — four methods,
+no SQL in any signature: `capabilities() -> AdapterCapabilities`, `health() ->
+AdapterHealth`, `estimate_cost(plan) -> AdapterCostEstimate | None`, `execute(plan) ->
+QueryResult` (`translate()` stays private to SQL-family adapters). `AdapterHealth`
+{status, checked_at, detail} with READY / DEGRADED / REINDEXING / OFFLINE /
+AUTHENTICATION_FAILED and ready/transient/terminal helpers. `SQLiteAdapter` implements
+the contract (behavior-preserving) and produces a documented cost HEURISTIC (coarse
+COUNT(*) rows capped by limit; complexity from join/agg/group_by count) reusing
+Sentinel's `AdapterCostEstimate` — one cost type. Runner lifecycle is now
+health → validation → adapter cost → Sentinel → execute: terminal health short-circuits
+with ADAPTER_UNAVAILABLE before validation, transient health proceeds with a recorded
+warning, and the cost estimate flows adapter → Sentinel with no hand-passing. 150
+pipeline tests (51 new this slice). Still synthetic data, no model call, no live-loop.
+*Verified: interface signatures mention no sql/cursor/statement/translate (introspected);
+forced OFFLINE/AUTHENTICATION_FAILED provably never call execute; cost produced by the
+adapter is consumed by the EXISTING Sentinel predicate (POLICY_DENIED end-to-end on a
+'low' ceiling); SQLiteAdapter refactor behavior-preserving (Slice 1-2 tests green, same
+QueryResult for a normal plan).*
 
 **⬜ Slice 4 — Data Intelligence skill emits plans**
 First model involvement: a model turns an objective ("which schools have the highest
