@@ -5,12 +5,19 @@ import {
   saveGovernanceConfig,
   fetchAdminUsers,
   patchUserGovernanceProfile,
+  createUser,
+  editUser,
+  suspendUser,
+  reactivateUser,
+  resetUserPassword,
 } from '../lib/api'
 
 /**
  * Slice 4.2: governance admin — view and edit profiles + rulesets.
+ * usercrud pass: the Users tab also does full account management
+ * (create / edit / reset password / suspend / reactivate).
  */
-export function GovernanceAdminModal({ onClose }) {
+export function GovernanceAdminModal({ onClose, currentUsername }) {
   const [data, setData] = useState(null)
   const [draft, setDraft] = useState(null)
   const [error, setError] = useState(null)
@@ -219,7 +226,10 @@ export function GovernanceAdminModal({ onClose }) {
                 />
               )}
               {tab === 'pilots' && (
-                <UsersAssignmentPanel profileIds={profileIds} />
+                <UsersAssignmentPanel
+                  profileIds={profileIds}
+                  currentUsername={currentUsername}
+                />
               )}
             </>
           )}
@@ -671,12 +681,214 @@ function FieldTable({ fields }) {
 }
 
 
-function UsersAssignmentPanel({ profileIds }) {
+const TEMP_PW_NOTE =
+  'This temporary password is shown once. Share it with the user and have ' +
+  'them change it at first login.'
+
+function CopyButton({ value }) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* clipboard may be unavailable (insecure origin); ignore */
+    }
+  }
+  return (
+    <button type="button" className="btn btn--ghost btn--small" onClick={copy}>
+      {copied ? 'copied' : 'copy'}
+    </button>
+  )
+}
+
+// One-time temp-password reveal, shown after create or reset.
+function TempPasswordBanner({ username, password, onDismiss }) {
+  return (
+    <div className="gov-admin__temp-pw">
+      <div className="gov-admin__temp-pw-head">
+        Temporary password for <strong>{username}</strong>
+        <button type="button" className="gov-admin__link-btn" onClick={onDismiss}>
+          dismiss
+        </button>
+      </div>
+      <div className="gov-admin__temp-pw-value">
+        <code>{password}</code>
+        <CopyButton value={password} />
+      </div>
+      <div className="gov-admin__temp-pw-note">{TEMP_PW_NOTE}</div>
+    </div>
+  )
+}
+
+const EMPTY_NEW_USER = {
+  username: '', display_name: '', email: '', role: 'pilot',
+  sessions_remaining: 3, max_turns_per_session: 10,
+}
+
+function NewUserForm({ onCreate, busy }) {
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState(EMPTY_NEW_USER)
+  const [err, setErr] = useState(null)
+
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); setErr(null) }
+
+  async function submit() {
+    if (!form.username.trim() || !form.display_name.trim() || !form.email.trim()) {
+      setErr('username, display name, and email are required')
+      return
+    }
+    const payload = {
+      username: form.username.trim(),
+      display_name: form.display_name.trim(),
+      email: form.email.trim(),
+      role: form.role,
+      sessions_remaining: Number(form.sessions_remaining),
+      max_turns_per_session: Number(form.max_turns_per_session),
+    }
+    const ok = await onCreate(payload)
+    if (ok) { setForm(EMPTY_NEW_USER); setOpen(false) }
+    else setErr(null) // panel-level error shows the message
+  }
+
+  if (!open) {
+    return (
+      <div className="gov-admin__newuser-bar">
+        <button type="button" className="btn btn--primary btn--small" onClick={() => setOpen(true)}>
+          + New user
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="gov-admin__card gov-admin__card--edit gov-admin__newuser">
+      <div className="gov-admin__card-header">
+        <span className="gov-admin__card-title">New user</span>
+        <button type="button" className="gov-admin__link-btn" onClick={() => setOpen(false)}>
+          cancel
+        </button>
+      </div>
+      <div className="gov-admin__form-grid">
+        <label className="gov-admin__field">
+          <span className="gov-admin__field-label">Username</span>
+          <input className="gov-admin__input" value={form.username}
+                 autoCapitalize="off" spellCheck={false}
+                 onChange={(e) => set('username', e.target.value)} />
+        </label>
+        <label className="gov-admin__field">
+          <span className="gov-admin__field-label">Display name</span>
+          <input className="gov-admin__input" value={form.display_name}
+                 onChange={(e) => set('display_name', e.target.value)} />
+        </label>
+        <label className="gov-admin__field">
+          <span className="gov-admin__field-label">Email</span>
+          <input className="gov-admin__input" value={form.email}
+                 onChange={(e) => set('email', e.target.value)} />
+        </label>
+        <label className="gov-admin__field">
+          <span className="gov-admin__field-label">Role</span>
+          <select className="gov-admin__select" value={form.role}
+                  onChange={(e) => set('role', e.target.value)}>
+            <option value="pilot">pilot</option>
+            <option value="admin">admin</option>
+          </select>
+        </label>
+        <label className="gov-admin__field">
+          <span className="gov-admin__field-label">Sessions remaining</span>
+          <input type="number" className="gov-admin__input" value={form.sessions_remaining}
+                 onChange={(e) => set('sessions_remaining', e.target.value)} />
+        </label>
+        <label className="gov-admin__field">
+          <span className="gov-admin__field-label">Max turns / session</span>
+          <input type="number" className="gov-admin__input" value={form.max_turns_per_session}
+                 onChange={(e) => set('max_turns_per_session', e.target.value)} />
+        </label>
+      </div>
+      {err && <div className="modal__error">{err}</div>}
+      <div className="gov-admin__form-actions">
+        <button type="button" className="btn btn--primary btn--small" onClick={submit} disabled={busy}>
+          {busy ? 'creating…' : 'Create user'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function EditUserForm({ user, onSave, onCancel, busy }) {
+  const [form, setForm] = useState({
+    display_name: user.display_name || '',
+    email: user.email || '',
+    role: user.role || 'pilot',
+    sessions_remaining: user.sessions_remaining ?? 0,
+    max_turns_per_session: user.max_turns_per_session ?? 0,
+  })
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })) }
+  function submit() {
+    onSave({
+      display_name: form.display_name.trim(),
+      email: form.email.trim(),
+      role: form.role,
+      sessions_remaining: Number(form.sessions_remaining),
+      max_turns_per_session: Number(form.max_turns_per_session),
+    })
+  }
+  return (
+    <tr className="gov-admin__edit-row">
+      <td colSpan={5}>
+        <div className="gov-admin__form-grid">
+          <label className="gov-admin__field">
+            <span className="gov-admin__field-label">Display name</span>
+            <input className="gov-admin__input" value={form.display_name}
+                   onChange={(e) => set('display_name', e.target.value)} />
+          </label>
+          <label className="gov-admin__field">
+            <span className="gov-admin__field-label">Email</span>
+            <input className="gov-admin__input" value={form.email}
+                   onChange={(e) => set('email', e.target.value)} />
+          </label>
+          <label className="gov-admin__field">
+            <span className="gov-admin__field-label">Role</span>
+            <select className="gov-admin__select" value={form.role}
+                    onChange={(e) => set('role', e.target.value)}>
+              <option value="pilot">pilot</option>
+              <option value="admin">admin</option>
+            </select>
+          </label>
+          <label className="gov-admin__field">
+            <span className="gov-admin__field-label">Sessions remaining</span>
+            <input type="number" className="gov-admin__input" value={form.sessions_remaining}
+                   onChange={(e) => set('sessions_remaining', e.target.value)} />
+          </label>
+          <label className="gov-admin__field">
+            <span className="gov-admin__field-label">Max turns / session</span>
+            <input type="number" className="gov-admin__input" value={form.max_turns_per_session}
+                   onChange={(e) => set('max_turns_per_session', e.target.value)} />
+          </label>
+        </div>
+        <div className="gov-admin__form-actions">
+          <button type="button" className="btn btn--ghost btn--small" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn--primary btn--small" onClick={submit} disabled={busy}>
+            {busy ? 'saving…' : 'Save'}
+          </button>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function UsersAssignmentPanel({ profileIds, currentUsername }) {
   const [usersData, setUsersData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [savingUser, setSavingUser] = useState(null)
   const [rowError, setRowError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(null)        // username being edited
+  const [tempPw, setTempPw] = useState(null)          // { username, password }
 
   const loadUsers = useCallback(async () => {
     setLoading(true)
@@ -702,11 +914,62 @@ function UsersAssignmentPanel({ profileIds }) {
       await patchUserGovernanceProfile(username, value || null)
       await loadUsers()
     } catch (e) {
-      const msg = (e && e.message) ? e.message : (typeof e === 'string' ? e : 'request failed')
-      setRowError(`${username}: ${msg}`)
+      setRowError(`${username}: ${e.message || e}`)
     } finally {
       setSavingUser(null)
     }
+  }
+
+  // Wrap a mutating action: clear error, run, reload, surface readable error.
+  async function runAction(fn) {
+    setBusy(true)
+    setRowError(null)
+    try {
+      const result = await fn()
+      await loadUsers()
+      return result
+    } catch (e) {
+      setRowError(e.message || String(e))
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleCreate(payload) {
+    const result = await runAction(() => createUser(payload))
+    if (result?.temporary_password) {
+      setTempPw({ username: result.user?.username || payload.username,
+                  password: result.temporary_password })
+      return true
+    }
+    return false
+  }
+
+  async function handleEditSave(username, payload) {
+    const result = await runAction(() => editUser(username, payload))
+    if (result) setEditing(null)
+  }
+
+  async function handleReset(username) {
+    if (!window.confirm(
+      `Reset ${username}'s password? This issues a new temporary password ` +
+      `and signs them out of all sessions.`)) return
+    const result = await runAction(() => resetUserPassword(username))
+    if (result?.temporary_password) {
+      setTempPw({ username, password: result.temporary_password })
+    }
+  }
+
+  async function handleSuspend(username) {
+    if (!window.confirm(
+      `Suspend ${username}? They will not be able to log in, but their ` +
+      `sessions and history are kept (this is not a delete).`)) return
+    await runAction(() => suspendUser(username))
+  }
+
+  async function handleReactivate(username) {
+    await runAction(() => reactivateUser(username))
   }
 
   if (loading) {
@@ -723,67 +986,121 @@ function UsersAssignmentPanel({ profileIds }) {
     ? profiles.map((p) => ({ id: p.id, name: p.name || p.id }))
     : profileIds.map((id) => ({ id, name: id }))
 
-  if (!users.length) {
-    return <div className="gov-admin__empty">No users in users.json.</div>
-  }
-
   return (
     <div className="gov-admin__users">
       <p className="gov-admin__field-intro">
-        Pilots are locked to their assigned profile at session start (server-enforced).
-        Admins choose a profile per session in the New Session modal.
-        Clearing a pilot&apos;s assignment uses the role default, then{' '}
-        <code>{defaultId}</code>.
+        Create and manage accounts here. &ldquo;Suspend&rdquo; blocks login but
+        preserves the user&apos;s sessions and history — there is no hard delete.
+        Pilots are locked to their assigned profile at session start; clearing a
+        pilot&apos;s assignment uses the role default, then <code>{defaultId}</code>.
       </p>
+
+      {tempPw && (
+        <TempPasswordBanner
+          username={tempPw.username}
+          password={tempPw.password}
+          onDismiss={() => setTempPw(null)}
+        />
+      )}
+
+      <NewUserForm onCreate={handleCreate} busy={busy} />
+
       {rowError && <div className="modal__error">{rowError}</div>}
-      <table className="gov-admin__table gov-admin__table--users">
-        <thead>
-          <tr>
-            <th>User</th>
-            <th>Role</th>
-            <th>Status</th>
-            <th>Assigned profile</th>
-          </tr>
-        </thead>
-        <tbody>
-          {users.map((u) => (
-            <tr key={u.username}>
-              <td>
-                <div className="gov-admin__user-name">{u.display_name}</div>
-                <div className="gov-admin__user-id">{u.username}</div>
-              </td>
-              <td>{u.role}</td>
-              <td>{u.status}</td>
-              <td>
-                {u.governance_profile_locked ? (
-                  <select
-                    className="gov-admin__select gov-admin__select--inline"
-                    value={u.governance_profile || ''}
-                    disabled={savingUser === u.username}
-                    onChange={(e) => handleAssign(u.username, e.target.value || null)}
-                  >
-                    <option value="">
-                      {u.role_governance_profile
-                        ? `(role: ${u.role_governance_profile})`
-                        : `(system default: ${defaultId})`}
-                    </option>
-                    {profileOptions.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className="gov-admin__admin-note">chooses per session</span>
-                )}
-                {u.governance_profile_locked && u.role_governance_profile && !u.governance_profile && (
-                  <div className="gov-admin__user-hint">
-                    role fallback: {u.role_governance_profile}
-                  </div>
-                )}
-              </td>
+
+      {!users.length ? (
+        <div className="gov-admin__empty">No users in users.json.</div>
+      ) : (
+        <table className="gov-admin__table gov-admin__table--users">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Assigned profile</th>
+              <th>Actions</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {users.map((u) => {
+              const suspended = u.status === 'suspended'
+              const isSelf = u.username === currentUsername
+              if (editing === u.username) {
+                return (
+                  <EditUserForm
+                    key={u.username}
+                    user={u}
+                    busy={busy}
+                    onCancel={() => setEditing(null)}
+                    onSave={(payload) => handleEditSave(u.username, payload)}
+                  />
+                )
+              }
+              return (
+                <tr key={u.username} className={suspended ? 'gov-admin__row--suspended' : ''}>
+                  <td>
+                    <div className="gov-admin__user-name">{u.display_name}</div>
+                    <div className="gov-admin__user-id">{u.username}</div>
+                  </td>
+                  <td>{u.role}</td>
+                  <td>
+                    <span className={`gov-admin__status gov-admin__status--${suspended ? 'suspended' : 'active'}`}>
+                      {u.status}
+                    </span>
+                  </td>
+                  <td>
+                    {u.governance_profile_locked ? (
+                      <select
+                        className="gov-admin__select gov-admin__select--inline"
+                        value={u.governance_profile || ''}
+                        disabled={savingUser === u.username}
+                        onChange={(e) => handleAssign(u.username, e.target.value || null)}
+                      >
+                        <option value="">
+                          {u.role_governance_profile
+                            ? `(role: ${u.role_governance_profile})`
+                            : `(system default: ${defaultId})`}
+                        </option>
+                        {profileOptions.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="gov-admin__admin-note">chooses per session</span>
+                    )}
+                  </td>
+                  <td>
+                    <div className="gov-admin__row-actions">
+                      <button type="button" className="btn btn--ghost btn--small"
+                              onClick={() => setEditing(u.username)} disabled={busy}>
+                        Edit
+                      </button>
+                      <button type="button" className="btn btn--ghost btn--small"
+                              onClick={() => handleReset(u.username)}
+                              disabled={busy || isSelf}
+                              title={isSelf ? 'Use the change-password screen for your own account' : ''}>
+                        Reset password
+                      </button>
+                      {suspended ? (
+                        <button type="button" className="btn btn--ghost btn--small"
+                                onClick={() => handleReactivate(u.username)} disabled={busy}>
+                          Reactivate
+                        </button>
+                      ) : (
+                        <button type="button" className="btn btn--danger btn--small"
+                                onClick={() => handleSuspend(u.username)}
+                                disabled={busy || isSelf}
+                                title={isSelf ? 'You cannot suspend your own account' : ''}>
+                          Suspend
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
   )
 }

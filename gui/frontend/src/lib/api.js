@@ -74,6 +74,24 @@ export function formatApiDetail(detail, status) {
   return prefix + String(detail)
 }
 
+// Parse a fetch Response as JSON, or throw an Error whose message is the
+// readable FastAPI detail (never "[object Object]"). The thrown error
+// carries .status so callers can branch on it. Used by the newer
+// user-management calls; older calls inline the same pattern.
+async function asJsonOrThrow(r) {
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`
+    try {
+      const body = await r.json()
+      detail = formatApiDetail(body?.detail, r.status)
+    } catch {}
+    const err = new Error(detail)
+    err.status = r.status
+    throw err
+  }
+  return r.json()
+}
+
 // ============================================================
 // v5 multi-user auth helpers
 // ============================================================
@@ -111,6 +129,21 @@ export async function whoami() {
   if (r.status === 401) return null
   if (!r.ok) throw new Error(`whoami: ${r.status}`)
   return r.json()
+}
+
+// Authenticated user-driven password change (also used for the forced
+// first-login change). Mutating -> carries the CSRF header.
+export async function changePassword(currentPassword, newPassword) {
+  const r = await fetch(`${API_BASE}/auth/change-password`, {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  })
+  return asJsonOrThrow(r)
 }
 
 // ============================================================
@@ -438,6 +471,65 @@ export async function patchUserGovernanceProfile(username, governanceProfile) {
     throw err
   }
   return r.json()
+}
+
+
+// ============================================================
+// Admin user CRUD (usercrud pass) — all mutating, all CSRF-protected.
+// Errors surface readable text via asJsonOrThrow/formatApiDetail.
+// ============================================================
+
+// Create a user. Returns { user, temporary_password } — the temp
+// password is shown to the admin once.
+export async function createUser(payload) {
+  const r = await fetch(`${API_BASE}/admin/users`, {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify(payload),
+  })
+  return asJsonOrThrow(r)
+}
+
+// Edit a user's profile fields (display_name, email, role, quotas).
+export async function editUser(username, payload) {
+  const r = await fetch(
+    `${API_BASE}/admin/users/${encodeURIComponent(username)}`,
+    {
+      method: 'PATCH',
+      headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    },
+  )
+  return asJsonOrThrow(r)
+}
+
+// Suspend a user (the UI "delete" action — no hard delete).
+export async function suspendUser(username) {
+  const r = await fetch(
+    `${API_BASE}/admin/users/${encodeURIComponent(username)}/suspend`,
+    { method: 'POST', headers: csrfHeaders(), credentials: 'include' },
+  )
+  return asJsonOrThrow(r)
+}
+
+// Reactivate a suspended user.
+export async function reactivateUser(username) {
+  const r = await fetch(
+    `${API_BASE}/admin/users/${encodeURIComponent(username)}/reactivate`,
+    { method: 'POST', headers: csrfHeaders(), credentials: 'include' },
+  )
+  return asJsonOrThrow(r)
+}
+
+// Reset a user's password. Returns { user, temporary_password } — shown once.
+export async function resetUserPassword(username) {
+  const r = await fetch(
+    `${API_BASE}/admin/users/${encodeURIComponent(username)}/reset-password`,
+    { method: 'POST', headers: csrfHeaders(), credentials: 'include' },
+  )
+  return asJsonOrThrow(r)
 }
 
 
