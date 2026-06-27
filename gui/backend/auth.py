@@ -311,6 +311,18 @@ def verify_password(plaintext: str, hashed: str) -> bool:
         return False
 
 
+def generate_temp_password() -> str:
+    """
+    Generate a reasonably strong, URL-safe temporary password for the
+    admin create-user and reset-password flows. The admin sees it once
+    and hands it to the user, who must change it on first login.
+
+    secrets.token_urlsafe(12) yields ~16 characters of URL-safe text
+    (>= the 12-char minimum) with ~96 bits of entropy.
+    """
+    return secrets.token_urlsafe(12)
+
+
 # ============================================================
 # User database
 # ============================================================
@@ -520,6 +532,30 @@ def set_user_governance_profile(username: str,
     return update_user(username, _mod)
 
 
+def set_user_password(username: str, new_password: str, *,
+                      must_change: bool) -> Dict[str, Any]:
+    """
+    Set a user's password and the must_change_password flag in one atomic,
+    locked write. Used by the admin reset-password and create-user flows
+    (must_change=True) and the user-driven change-password flow
+    (must_change=False).
+
+    Raises ValueError on an empty password and KeyError if the user does
+    not exist (propagated from update_user). Does NOT touch any other
+    field -- it deliberately reuses update_user so unrelated CRUD logic is
+    not reimplemented here.
+    """
+    if not new_password or not isinstance(new_password, str):
+        raise ValueError("password must be a non-empty string")
+    new_hash = hash_password(new_password)
+
+    def _mod(user: Dict[str, Any]) -> None:
+        user["password_hash"] = new_hash
+        user["must_change_password"] = bool(must_change)
+
+    return update_user(username, _mod)
+
+
 def admin_user_summaries() -> List[Dict[str, Any]]:
     """
     Sanitized user list for the admin UI. Omits password hashes and
@@ -541,6 +577,7 @@ def admin_user_summaries() -> List[Dict[str, Any]]:
             "email":                 rec.get("email", ""),
             "role":                  role_name,
             "status":                rec.get("status", "active"),
+            "must_change_password":  bool(rec.get("must_change_password", False)),
             "sessions_remaining":    rec.get("sessions_remaining", 0),
             "max_turns_per_session": rec.get("max_turns_per_session", 0),
             "governance_profile":    user_profile,
@@ -797,6 +834,33 @@ def _delete_login_session(token: str) -> None:
             del db["sessions"][token]
         return db
     _atomic_modify(_LOGIN_SESSIONS_PATH, _mod)
+
+
+def invalidate_user_sessions(username: str) -> int:
+    """
+    Delete ALL active login sessions belonging to `username`. Returns the
+    number of sessions removed.
+
+    Used by the admin reset-password flow so a password reset forces the
+    affected user to re-login. Uses the same atomic locked write as the
+    rest of the session store; touches nothing but that user's tokens.
+    """
+    if not username:
+        return 0
+    _ensure_initialized()
+    removed = {"n": 0}
+
+    def _mod(db: Dict[str, Any]) -> Dict[str, Any]:
+        sessions = db.get("sessions", {})
+        to_drop = [t for t, rec in sessions.items()
+                   if rec.get("username") == username]
+        for t in to_drop:
+            del sessions[t]
+        removed["n"] = len(to_drop)
+        return db
+
+    _atomic_modify(_LOGIN_SESSIONS_PATH, _mod)
+    return removed["n"]
 
 
 def _prune_expired_in_place(db: Dict[str, Any]) -> None:

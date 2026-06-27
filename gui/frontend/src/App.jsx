@@ -8,6 +8,7 @@ import { NewSessionModal } from './components/NewSessionModal'
 import { ResumeModal } from './components/ResumeModal'
 import { GovernanceAdminModal } from './components/GovernanceAdminModal'
 import { LoginPage } from './components/LoginPage'
+import { ChangePasswordPage } from './components/ChangePasswordPage'
 import {
   fetchSessions, fetchSessionEvents, streamSessionEvents,
   whoami, logout,
@@ -271,6 +272,19 @@ export default function App() {
     return <LoginPage onLoginSuccess={handleLoginSuccess} />
   }
 
+  // Logged in but must change password first (new account or admin reset).
+  // Block the dashboard until the change succeeds. whoami() re-fetch clears
+  // the flag and falls through to the dashboard.
+  if (user.must_change_password) {
+    return (
+      <ChangePasswordPage
+        forced
+        onChanged={refreshUser}
+        onLogout={handleLogout}
+      />
+    )
+  }
+
   // Authenticated dashboard.
   return (
     <div className="app">
@@ -352,7 +366,10 @@ export default function App() {
       )}
 
       {showGovernanceAdmin && (
-        <GovernanceAdminModal onClose={() => setShowGovernanceAdmin(false)} />
+        <GovernanceAdminModal
+          onClose={() => setShowGovernanceAdmin(false)}
+          currentUsername={user.username}
+        />
       )}
     </div>
   )

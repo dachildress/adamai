@@ -3343,3 +3343,118 @@ a { color: inherit; text-decoration: none; }
   font-size: 11px;
   padding: 4px 6px;
 }
+
+/* ============================================================
+   usercrud pass: user management UI (Users tab) + forced
+   password-change screen.
+   ============================================================ */
+
+.login-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  padding: 8px 10px;
+  border: 1px solid var(--line-faint);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+}
+
+.gov-admin__newuser-bar {
+  margin: 8px 0 12px;
+}
+
+.gov-admin__newuser {
+  margin-bottom: 14px;
+}
+
+.gov-admin__form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.gov-admin__form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.btn--small {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.gov-admin__row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.gov-admin__status {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.gov-admin__status--active {
+  color: var(--jade);
+  background: rgba(52, 211, 153, 0.10);
+  border: 1px solid rgba(52, 211, 153, 0.30);
+}
+.gov-admin__status--suspended {
+  color: var(--coral);
+  background: rgba(248, 113, 113, 0.10);
+  border: 1px solid rgba(248, 113, 113, 0.30);
+}
+
+.gov-admin__row--suspended td {
+  opacity: 0.55;
+}
+.gov-admin__row--suspended .gov-admin__row-actions {
+  opacity: 1;
+}
+
+.gov-admin__edit-row td {
+  background: var(--bg-raised);
+  padding: 14px;
+}
+
+.gov-admin__temp-pw {
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.07);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.gov-admin__temp-pw-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.gov-admin__temp-pw-value {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.gov-admin__temp-pw-value code {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--text-bright);
+  background: var(--bg-deep);
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  letter-spacing: 0.02em;
+  user-select: all;
+}
+.gov-admin__temp-pw-note {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 8px;
+  line-height: 1.4;
+}
