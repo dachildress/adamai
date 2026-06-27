@@ -249,9 +249,15 @@ def test_continue_endpoint_e2e():
         server.spawn_adam_session = fake_spawn  # monkeypatch
 
         client = TestClient(app)
-        cookies = {"adam_login": token}
+        # Pass 1 hardening: authenticated mutating requests now require a
+        # signed CSRF token (cookie + matching X-CSRF-Token header). Mint
+        # one bound to this login token; build_app already called
+        # csrf.init_csrf so the secret is set.
+        csrf_token = server.csrf.issue_token(token)
+        cookies = {"adam_login": token, "adam_csrf": csrf_token}
+        csrf_headers = {"X-CSRF-Token": csrf_token}
 
-        # --- 401 without auth ---
+        # --- 401 without auth (no cookie at all) ---
         r_noauth = client.post(
             "/api/sessions/parent-123/continue",
             data={"seed": "add a board version"},
@@ -264,6 +270,7 @@ def test_continue_endpoint_e2e():
             "/api/sessions/does-not-exist/continue",
             data={"seed": "add a board version"},
             cookies=cookies,
+            headers=csrf_headers,
         )
         check("404 for unknown parent", r_404.status_code == 404,
               f"got {r_404.status_code}")
@@ -274,6 +281,7 @@ def test_continue_endpoint_e2e():
             "/api/sessions/parent-123/continue",
             data={"seed": "redo using Citizenship as the 5th C", "max_turns": "200"},
             cookies=cookies,
+            headers=csrf_headers,
         )
         check("continue returns 200", r.status_code == 200,
               f"got {r.status_code}: {r.text[:200]}")
@@ -430,10 +438,14 @@ def test_governance_attached_and_inherited():
         _orig_spawn_2 = server.spawn_adam_session
         server.spawn_adam_session = fake_spawn
         client = TestClient(app)
-        cookies = {"adam_login": token}
+        # Pass 1 hardening: CSRF token bound to this login session.
+        csrf_token = server.csrf.issue_token(token)
+        cookies = {"adam_login": token, "adam_csrf": csrf_token}
+        csrf_headers = {"X-CSRF-Token": csrf_token}
 
         # Fresh session, no profile specified -> default "general".
-        r1 = client.post("/api/sessions", data={"seed": "do a thing"}, cookies=cookies)
+        r1 = client.post("/api/sessions", data={"seed": "do a thing"},
+                         cookies=cookies, headers=csrf_headers)
         check("fresh session spawn 201", r1.status_code == 201, r1.text[:200])
         last = sorted(spawned.keys())[-1]
         check("fresh session gets default profile (general)",
@@ -448,7 +460,8 @@ def test_governance_attached_and_inherited():
         }), encoding="utf-8")
 
         r2 = client.post("/api/sessions/parent-123/continue",
-                         data={"seed": "follow up"}, cookies=cookies)
+                         data={"seed": "follow up"}, cookies=cookies,
+                         headers=csrf_headers)
         check("continuation spawn 200", r2.status_code == 200, r2.text[:200])
         last = sorted(spawned.keys())[-1]
         check("continuation INHERITS parent's profile (locked)",
@@ -458,7 +471,7 @@ def test_governance_attached_and_inherited():
         # Continue again, this time OVERRIDING the profile.
         r3 = client.post("/api/sessions/parent-123/continue",
                          data={"seed": "follow up 2", "governance_profile_id": "general"},
-                         cookies=cookies)
+                         cookies=cookies, headers=csrf_headers)
         check("continuation override spawn 200", r3.status_code == 200, r3.text[:200])
         last = sorted(spawned.keys())[-1]
         check("continuation OVERRIDE wins over inheritance (general)",

@@ -40,6 +40,10 @@ gui/login_sessions.json
 gui/pending_registrations.json
 gui/gui/users.json
 gui/gui/login_sessions.json
+# Pass 1 hardening: CSRF signing secret (generated at runtime, never commit)
+.csrf_secret
+gui/.csrf_secret
+gui/gui/.csrf_secret
 *.lock
 gui/*.lock
 
