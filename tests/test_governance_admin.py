@@ -268,7 +268,7 @@ def _make_app_with_users(tmp: Path):
     # skills dir for universe discovery
     skills_dir = tmp / "skills"
     for s in SKILLS:
-        (skills_dir / s).mkdir()
+        (skills_dir / s).mkdir(parents=True, exist_ok=True)
     app = server.build_app(adam_root=tmp, logs_dir=logs_dir)
     return app, admin_token, pilot_token
 
@@ -291,8 +291,24 @@ def test_admin_api_endpoints():
         app, admin_token, pilot_token = result
         client = TestClient(app)
 
+        # Pass 1 hardening: mutating admin endpoints now require a signed
+        # CSRF token bound to the login session. GETs are exempt.
+        from backend import csrf
+        admin_csrf = csrf.issue_token(admin_token)
+        acookies = {"adam_login": admin_token, "adam_csrf": admin_csrf}
+        aheaders = {"X-CSRF-Token": admin_csrf}
+
         r_anon = client.get("/api/admin/governance")
         check("anon gets 401", r_anon.status_code == 401)
+
+        # CSRF: an authenticated admin PUT with NO token is rejected 403.
+        r_nocsrf = client.put(
+            "/api/admin/governance",
+            cookies={"adam_login": admin_token},
+            json=VALID_CONFIG,
+        )
+        check("admin mutating without CSRF gets 403",
+              r_nocsrf.status_code == 403, f"got {r_nocsrf.status_code}")
 
         r_pilot = client.get(
             "/api/admin/governance",
@@ -314,7 +330,8 @@ def test_admin_api_endpoints():
 
         r_val = client.post(
             "/api/admin/governance/validate",
-            cookies={"adam_login": admin_token},
+            cookies=acookies,
+            headers=aheaders,
             json=VALID_CONFIG,
         )
         check("validate endpoint 200", r_val.status_code == 200)
@@ -325,7 +342,8 @@ def test_admin_api_endpoints():
         bad["default_profile_id"] = "nope"
         r_bad = client.post(
             "/api/admin/governance/validate",
-            cookies={"adam_login": admin_token},
+            cookies=acookies,
+            headers=aheaders,
             json=bad,
         )
         check("validate bad config returns valid false",
@@ -333,7 +351,8 @@ def test_admin_api_endpoints():
 
         r_put = client.put(
             "/api/admin/governance",
-            cookies={"adam_login": admin_token},
+            cookies=acookies,
+            headers=aheaders,
             json=VALID_CONFIG,
         )
         check("put valid config 200", r_put.status_code == 200, r_put.text[:200])
@@ -342,7 +361,8 @@ def test_admin_api_endpoints():
         modified["default_profile_id"] = "nope"
         r_put_bad = client.put(
             "/api/admin/governance",
-            cookies={"adam_login": admin_token},
+            cookies=acookies,
+            headers=aheaders,
             json=modified,
         )
         check("put invalid config 400", r_put_bad.status_code == 400)
@@ -358,7 +378,8 @@ def test_admin_api_endpoints():
 
         r_patch = client.patch(
             "/api/admin/users/pilotuser/governance-profile",
-            cookies={"adam_login": admin_token},
+            cookies=acookies,
+            headers=aheaders,
             json={"governance_profile": "education"},
         )
         check("patch pilot profile 200", r_patch.status_code == 200, r_patch.text[:200])
@@ -368,7 +389,8 @@ def test_admin_api_endpoints():
 
         r_patch_bad = client.patch(
             "/api/admin/users/pilotuser/governance-profile",
-            cookies={"adam_login": admin_token},
+            cookies=acookies,
+            headers=aheaders,
             json={"governance_profile": "not_a_profile"},
         )
         check("patch unknown profile 400", r_patch_bad.status_code == 400)

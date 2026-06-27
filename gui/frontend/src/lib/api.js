@@ -20,6 +20,36 @@
 const API_BASE = '/api'
 
 
+// ============================================================
+// Pass 1 hardening: CSRF (signed double-submit cookie)
+// ============================================================
+//
+// The backend sets a JS-readable `adam_csrf` cookie on login (and
+// re-issues it on /auth/whoami). For every MUTATING request (POST, PUT,
+// PATCH, DELETE) we read that cookie and echo its value back in the
+// X-CSRF-Token header -- that round-trip is the "double submit" the
+// server validates. GET requests and the login call are exempt.
+//
+// This applies to multipart/FormData calls too (session create /
+// continue / resume): we must NOT set Content-Type ourselves on those
+// (the browser sets the multipart boundary), so csrfHeaders() returns
+// only the CSRF header for them.
+
+export function readCsrfToken() {
+  if (typeof document === 'undefined' || !document.cookie) return ''
+  const m = document.cookie.match(/(?:^|;\s*)adam_csrf=([^;]+)/)
+  return m ? decodeURIComponent(m[1]) : ''
+}
+
+// Merge the X-CSRF-Token header into any caller-provided headers. Pass
+// the JSON content-type in `extra` for JSON bodies; pass nothing for
+// FormData bodies so the browser can set the multipart boundary.
+function csrfHeaders(extra = {}) {
+  const token = readCsrfToken()
+  return token ? { ...extra, 'X-CSRF-Token': token } : { ...extra }
+}
+
+
 // FastAPI error bodies put the message in `detail`, which can be:
 //   - a string  -> use as-is
 //   - an array of validation objects (422) -> join their msg fields
@@ -71,6 +101,7 @@ export async function login(username, password) {
 export async function logout() {
   await fetch(`${API_BASE}/auth/logout`, {
     method: 'POST',
+    headers: csrfHeaders(),
     credentials: 'include',
   })
 }
@@ -119,7 +150,7 @@ export async function fetchSessionVerifications(sessionId) {
 export async function overrideVerificationClaim(sessionId, { claimId, status, reason, feedback }) {
   const r = await fetch(`${API_BASE}/sessions/${sessionId}/verifications/override`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
     credentials: 'include',
     body: JSON.stringify({
       claim_id: claimId,
@@ -164,7 +195,7 @@ export async function submitDirectorMessage(sessionId, content) {
     `${API_BASE}/sessions/${sessionId}/director_message`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: csrfHeaders({ 'Content-Type': 'application/json' }),
       credentials: 'include',
       body: JSON.stringify({ content }),
     },
@@ -213,6 +244,7 @@ export async function createNewSession({
 
   const r = await fetch(`${API_BASE}/sessions`, {
     method: 'POST',
+    headers: csrfHeaders(),   // CSRF on multipart too; no Content-Type (browser sets boundary)
     credentials: 'include',
     body: fd,
   })
@@ -262,6 +294,7 @@ export async function continueSession(parentId, {
 
   const r = await fetch(`${API_BASE}/sessions/${parentId}/continue`, {
     method: 'POST',
+    headers: csrfHeaders(),   // CSRF on multipart too; no Content-Type (browser sets boundary)
     credentials: 'include',
     body: fd,
   })
@@ -315,7 +348,7 @@ export async function fetchGovernanceAdmin() {
 export async function validateGovernanceConfig(config) {
   const r = await fetch(`${API_BASE}/admin/governance/validate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
     credentials: 'include',
     body: JSON.stringify(config),
   })
@@ -340,7 +373,7 @@ export async function validateGovernanceConfig(config) {
 export async function saveGovernanceConfig(config) {
   const r = await fetch(`${API_BASE}/admin/governance`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
     credentials: 'include',
     body: JSON.stringify(config),
   })
@@ -387,7 +420,7 @@ export async function patchUserGovernanceProfile(username, governanceProfile) {
     `${API_BASE}/admin/users/${encodeURIComponent(username)}/governance-profile`,
     {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: csrfHeaders({ 'Content-Type': 'application/json' }),
       credentials: 'include',
       body: JSON.stringify({
         governance_profile: governanceProfile || null,
@@ -430,6 +463,7 @@ export async function resumeSession(pausedId, {
 
   const r = await fetch(`${API_BASE}/sessions/${pausedId}/resume`, {
     method: 'POST',
+    headers: csrfHeaders(),   // CSRF on multipart too; no Content-Type (browser sets boundary)
     credentials: 'include',
     body: fd,
   })

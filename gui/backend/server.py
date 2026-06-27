@@ -49,11 +49,15 @@ from sse_starlette.sse import EventSourceResponse
 # `python gui/backend/server.py`.
 try:
     from . import auth  # when imported as backend.server
+    from . import csrf
     from . import governance
+    from . import ratelimit
     from . import verification
 except ImportError:
     import auth          # when run directly
+    import csrf
     import governance
+    import ratelimit
     import verification
 
 
@@ -1282,6 +1286,13 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
     gui_root = adam_root / "gui"
     auth.init_auth(gui_root)
     governance.init_governance(gui_root)   # Slice 1: data model only
+    csrf.init_csrf(gui_root)               # Pass 1 hardening: CSRF signing secret
+
+    # Pass 1 hardening: per-process login rate limiter. Stored on
+    # app.state so it has app lifetime (one set of counters per process)
+    # and is easy to swap in tests. In-memory, single-process, resets on
+    # restart -- see ratelimit.py for the documented limitations.
+    app.state.login_rate_limiter = ratelimit.LoginRateLimiter()
 
     # CORS: now restrictive because we use cookies. allow_credentials=True
     # is required for the browser to send the login cookie on cross-
@@ -1333,6 +1344,33 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         """Dependency: 403 unless the user has the admin role."""
         if not is_admin(user):
             raise HTTPException(status_code=403, detail="admin access required")
+        return user
+
+    def require_csrf(
+        request: Request,
+        user: Dict[str, Any] = Depends(require_user),
+    ) -> Dict[str, Any]:
+        """
+        Pass 1 hardening: enforce the signed double-submit CSRF token on
+        authenticated MUTATING requests.
+
+        Depends on require_user so the ordering is: unauthenticated ->
+        401 (auth fires first), authenticated-but-bad-token -> 403. This
+        preserves the existing 401-without-cookie contract while adding
+        the 403-without-CSRF-token one.
+
+        The token is validated against the request's adam_login token, so
+        a token minted for one session can't be replayed in another. Only
+        applied to the mutating endpoints (never to login or GETs).
+        """
+        login_token = request.cookies.get(LOGIN_COOKIE_NAME) or ""
+        cookie_value = request.cookies.get(csrf.CSRF_COOKIE_NAME)
+        header_value = request.headers.get(csrf.CSRF_HEADER_NAME)
+        if not csrf.validate_token(cookie_value, header_value, login_token):
+            raise HTTPException(
+                status_code=403,
+                detail="CSRF token missing or invalid",
+            )
         return user
 
     def is_admin(user: Dict[str, Any]) -> bool:
@@ -1411,10 +1449,50 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
           - 401: bad credentials
           - 403: user exists but suspended
         """
+        # Source IP for rate-limit attribution and the audit record below.
+        # We read the raw client IP (not X-Forwarded-For) -- behind a
+        # reverse proxy this is the proxy, which is acceptable for the pilot.
+        ip_address = request.client.host if request.client else ""
+
+        # Pass 1 hardening: login rate limiting. Checked BEFORE touching
+        # the user store so a throttled valid user and a throttled invalid
+        # user get the identical 429 (no username enumeration).
+        #
+        # FAIL OPEN: the limiter is a speed bump, not an auth gate. If it
+        # raises for any reason, log and let the login proceed -- a limiter
+        # bug must never lock everyone out. (Deliberate asymmetry with
+        # governance, which fails CLOSED.)
+        limiter = getattr(request.app.state, "login_rate_limiter", None)
+        try:
+            retry_after = limiter.check(payload.username, ip_address) if limiter else None
+        except Exception:
+            import traceback
+            print("WARNING: login rate limiter check failed; allowing login (fail-open)",
+                  file=sys.stderr)
+            traceback.print_exc()
+            retry_after = None
+        if retry_after is not None:
+            # Generic message + Retry-After. Same response whether or not
+            # the username exists.
+            raise HTTPException(
+                status_code=429,
+                detail="too many login attempts; please try again later",
+                headers={"Retry-After": str(retry_after)},
+            )
+
         user = auth.get_user(payload.username)
         if user is None or not auth.verify_password(
             payload.password, user.get("password_hash", "")
         ):
+            # Failed attempt: count it against username + IP (fail-open).
+            try:
+                if limiter:
+                    limiter.record_failure(payload.username, ip_address)
+            except Exception:
+                import traceback
+                print("WARNING: login rate limiter record_failure failed (fail-open)",
+                      file=sys.stderr)
+                traceback.print_exc()
             # Generic message so attackers can't enumerate usernames
             raise HTTPException(status_code=401, detail="invalid credentials")
         if user.get("status") != "active":
@@ -1423,6 +1501,17 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
                 detail="account is not active",
             )
 
+        # Successful credential check: clear the username's failure counter
+        # so earlier typos don't penalize a now-correct login (fail-open).
+        try:
+            if limiter:
+                limiter.reset_username(payload.username)
+        except Exception:
+            import traceback
+            print("WARNING: login rate limiter reset_username failed (fail-open)",
+                  file=sys.stderr)
+            traceback.print_exc()
+
         # Create login session. We record user-agent and IP for audit;
         # the IP from request.client is good enough behind a reverse
         # proxy (Caddy/nginx) because the proxy populates X-Forwarded-For
@@ -1430,7 +1519,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         # IP. For a small beta this is fine; richer attribution is a
         # later concern.
         user_agent = request.headers.get("user-agent", "")
-        ip_address = request.client.host if request.client else ""
+        # ip_address was resolved above for rate-limit attribution.
         token = auth.create_login_session(
             payload.username,
             user_agent=user_agent,
@@ -1456,29 +1545,80 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
             path="/",
         )
 
+        # Pass 1 hardening: issue a signed CSRF token bound to this login
+        # session. Unlike the login cookie, adam_csrf is httponly=False so
+        # the frontend can read it and echo it back in X-CSRF-Token (the
+        # "double submit"). samesite=lax / secure-when-deployed match the
+        # login cookie. The value is signed, so an attacker can't forge it.
+        response.set_cookie(
+            key=csrf.CSRF_COOKIE_NAME,
+            value=csrf.issue_token(token),
+            max_age=LOGIN_COOKIE_MAX_AGE,
+            httponly=False,
+            secure=is_secure,
+            samesite="lax",
+            path="/",
+        )
+
         return _whoami_payload(user)
 
     @app.post("/api/auth/logout")
-    def logout(request: Request, response: Response) -> Dict[str, str]:
+    def logout(
+        request: Request,
+        response: Response,
+        _csrf: Dict[str, Any] = Depends(require_csrf),
+    ) -> Dict[str, str]:
         """
         Invalidate the current login session and clear the cookie.
-        Idempotent -- works even if no cookie is set.
+
+        Pass 1 hardening: this mutating endpoint now requires a valid
+        CSRF token (and therefore a valid login session). A request with
+        no session yields 401 (from require_user); a session without a
+        valid CSRF token yields 403. Both the login and CSRF cookies are
+        cleared on success.
         """
         token = request.cookies.get(LOGIN_COOKIE_NAME)
         auth.delete_login_session(token)
         response.delete_cookie(LOGIN_COOKIE_NAME, path="/")
+        response.delete_cookie(csrf.CSRF_COOKIE_NAME, path="/")
         return {"status": "logged_out"}
 
     @app.get("/api/auth/whoami", response_model=WhoamiResponse)
-    def whoami(request: Request) -> WhoamiResponse:
+    def whoami(request: Request, response: Response) -> WhoamiResponse:
         """
         Return the currently logged-in user's profile, or 401 if not
         logged in. Frontend calls this on every page load to decide
         whether to render the login screen or the dashboard.
+
+        Pass 1 hardening: whoami is a GET (no CSRF required to call it),
+        but it doubles as the recovery path for the CSRF cookie. If a
+        valid login session exists without an adam_csrf cookie -- e.g. a
+        user logged in before this hardening shipped, or the cookie
+        expired/was cleared -- we mint and set one here so their next
+        mutating request isn't rejected with a 403. This runs on every
+        page load, so active sessions self-heal.
         """
         user = current_user_optional(request)
         if user is None:
             raise HTTPException(status_code=401, detail="not authenticated")
+
+        if not request.cookies.get(csrf.CSRF_COOKIE_NAME):
+            login_token = request.cookies.get(LOGIN_COOKIE_NAME) or ""
+            if login_token:
+                is_secure = (
+                    request.headers.get("x-forwarded-proto", "").lower() == "https"
+                    or request.url.scheme == "https"
+                )
+                response.set_cookie(
+                    key=csrf.CSRF_COOKIE_NAME,
+                    value=csrf.issue_token(login_token),
+                    max_age=LOGIN_COOKIE_MAX_AGE,
+                    httponly=False,
+                    secure=is_secure,
+                    samesite="lax",
+                    path="/",
+                )
+
         return WhoamiResponse(**_whoami_payload(user))
 
     def _whoami_payload(user: Dict[str, Any]) -> Dict[str, Any]:
@@ -1569,6 +1709,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         no_verify:     bool         = Form(False),
         context_files: List[UploadFile] = File(default=[]),
         governance_profile_id: Optional[str] = Form(None),
+        _csrf:         Dict[str, Any] = Depends(require_csrf),
     ) -> NewSessionResponse:
         """
         Create a new ADAM session and spawn the deliberation in the
@@ -1727,6 +1868,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         no_verify:     bool         = Form(False),
         context_files: List[UploadFile] = File(default=[]),
         governance_profile_id: Optional[str] = Form(None),
+        _csrf:         Dict[str, Any] = Depends(require_csrf),
     ) -> NewSessionResponse:
         """
         Continue from a completed session: create a NEW (child) session
@@ -1890,6 +2032,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         max_turns:     Optional[int] = Form(None),
         no_verify:     bool         = Form(False),
         context_files: List[UploadFile] = File(default=[]),
+        _csrf:         Dict[str, Any] = Depends(require_csrf),
     ) -> NewSessionResponse:
         """
         Slice 4a/4b: resume a paused session.
@@ -2052,6 +2195,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
     def validate_admin_governance(
         payload: Dict[str, Any] = Body(...),
         user: Dict[str, Any] = Depends(require_admin),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
     ) -> Dict[str, Any]:
         """Slice 4.2: validate a proposed governance config without saving."""
         skill_universe = _discover_skill_universe(adam_root)
@@ -2062,6 +2206,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
     def put_admin_governance(
         payload: Dict[str, Any] = Body(...),
         user: Dict[str, Any] = Depends(require_admin),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
     ) -> Dict[str, Any]:
         """Slice 4.2 Phase 2: validate and save governance.json, then hot-reload."""
         skill_universe = _discover_skill_universe(adam_root)
@@ -2094,6 +2239,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         username: str,
         body: UserGovernanceProfileUpdate,
         admin: Dict[str, Any] = Depends(require_admin),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
     ) -> Dict[str, Any]:
         """Assign or clear a user's governance profile (stored on users.json)."""
         target = auth.get_user(username)
@@ -2231,6 +2377,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         session_id: str,
         body: VerificationOverrideBody,
         admin: Dict[str, Any] = Depends(require_admin),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
     ) -> Dict[str, Any]:
         """Admin override of a Truthseeker verdict with audit trail."""
         sdir = resolve_session_dir(admin, session_id)
@@ -2370,6 +2517,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         session_id: str,
         body: DirectorMessageRequest,
         request: Request,
+        _csrf: Dict[str, Any] = Depends(require_csrf),
     ) -> DirectorMessageResponse:
         """
         Part 8: queue a Director message for an active session.
