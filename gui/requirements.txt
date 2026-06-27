@@ -24,27 +24,29 @@
 # installs into the original venv's site-packages while python loads
 # from the new venv's site-packages.
 #
-# Version pins are intentionally absent. If a future version of any
-# package breaks the GUI, pin to the last known good version here.
+# Pinned to the known-good versions currently installed in the project
+# venv (Python 3.12). Versions captured with:
+#     venv/bin/pip show <package>
+# To intentionally upgrade, bump the pin here and re-test.
 
 
 # Web framework. Backs every GUI endpoint: session list, event stream,
 # SSE tail, director_message inbox, new-session spawn, artifact serve.
 # Pulls starlette and pydantic in as transitive dependencies.
-fastapi
+fastapi==0.138.1
 
 # ASGI server. Used by gui/adam_gui.py to run the FastAPI app.
-uvicorn
+uvicorn==0.49.0
 
 # Server-Sent Events helper. Used by /api/sessions/{id}/stream to push
 # events.jsonl lines to the browser. Provides keep-alive, reconnect,
 # and the EventSourceResponse class.
-sse-starlette
+sse-starlette==3.4.5
 
 # Pydantic v2 -- request/response model validation. Already pulled in
 # by FastAPI as a transitive dependency, but listed explicitly so the
 # dependency is visible and pin-able.
-pydantic
+pydantic==2.13.4
 
 # Part 8/9: multipart/form-data parser. FastAPI loads this at app-build
 # time whenever any endpoint declares Form(...) or File(...). The
@@ -53,7 +55,7 @@ pydantic
 # a long RuntimeError stack that points away from the real cause.
 # adam_gui.py now pre-flights this so the failure mode is a clean
 # one-line install hint instead.
-python-multipart
+python-multipart==0.0.32
 
 # v5 multi-user (Part 10): bcrypt for password hashing. Used by both
 # the backend (gui/backend/auth.py) and the user-management CLI
@@ -61,4 +63,4 @@ python-multipart
 # work factor is 12 rounds. Replacing bcrypt with argon2 or scrypt
 # later is a small change; the verify_password() interface is
 # already library-agnostic from the call sites.
-bcrypt
+bcrypt==5.0.0

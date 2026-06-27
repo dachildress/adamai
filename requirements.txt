@@ -7,35 +7,37 @@
 # The .env loader is a custom minimal implementation, so python-dotenv
 # is NOT required.
 #
-# Version pins are intentionally absent. If a future version of any of
-# these breaks ADAM, pin to the last known good version here.
+# Pinned to the known-good versions currently installed in the project
+# venv (Python 3.12). Versions captured with:
+#     venv/bin/pip show <package>
+# To intentionally upgrade, bump the pin here and re-test.
 
 
 # Anthropic API SDK -- used by Sonnet (advisory) and Haiku (Truthseeker,
 # Summarizer).
-anthropic
+anthropic==0.112.0
 
 # OpenAI API SDK -- used by GPT-4o agents per agents.json.
-openai
+openai==2.44.0
 
 # HTML/text extraction for source pages fetched during Truthseeker
 # verification. Without trafilatura, only search snippets can be judged,
 # and the policy rules prevent snippet-only sources from reaching VERIFIED.
-trafilatura
+trafilatura==2.1.0
 
 # HTTP client for SearXNG search queries during Truthseeker verification.
 # Without requests, no claims can be verified -- every verification turn
 # errors out with ModuleNotFoundError.
-requests
+requests==2.34.2
 
 # .docx text extraction for the Context Loader. Without python-docx, .docx
 # files in --context-dir cannot be loaded and will be soft-failed with a
 # warning. .docx is a common format for governance documents, so this is
 # effectively required for production use.
-python-docx
+python-docx==1.2.0
 
 # .pdf text extraction for the Context Loader. Without pypdf, .pdf files
 # in --context-dir cannot be loaded. Note: pypdf handles text-based PDFs
 # only; scanned/image-based PDFs require OCR which is out of scope for v1
 # and will soft-fail with a clear warning.
-pypdf
+pypdf==6.14.2
