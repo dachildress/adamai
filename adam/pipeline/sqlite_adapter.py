@@ -30,8 +30,10 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
 
+from .adapter import READY, Adapter, AdapterHealth, health as make_health
 from .adapter_capabilities import AdapterCapabilities, SQLITE_CAPABILITIES
 from .execution_plan import ExecutionPlan, QueryBody
+from .sentinel import AdapterCostEstimate
 from .source_model import SourceModel
 
 # Output-alias identifiers must be simple to be quoted safely.
@@ -61,16 +63,63 @@ class QueryResult:
     source_lineage: dict = field(default_factory=dict)
 
 
-class SQLiteAdapter:
+class SQLiteAdapter(Adapter):
     def __init__(
         self,
         connection: sqlite3.Connection,
         source_model: SourceModel,
         capabilities: AdapterCapabilities = SQLITE_CAPABILITIES,
+        *,
+        health_status: str = READY,
+        health_detail: Optional[str] = None,
     ) -> None:
         self.connection = connection
         self.source_model = source_model
-        self.capabilities = capabilities
+        self._capabilities = capabilities
+        # Forced health for tests. A live in-memory DB is READY by default;
+        # tests construct the adapter with e.g. health_status=OFFLINE to
+        # exercise the runner's terminal short-circuit.
+        self._health_status = health_status
+        self._health_detail = health_detail
+
+    # -- Adapter interface ------------------------------------------------
+
+    def capabilities(self) -> AdapterCapabilities:
+        return self._capabilities
+
+    def health(self) -> AdapterHealth:
+        """Report operational state. Defaults to READY for a live in-memory
+        DB; honors a forced status set at construction (for tests)."""
+        return make_health(self._health_status, self._health_detail)
+
+    def estimate_cost(self, plan: ExecutionPlan) -> Optional[AdapterCostEstimate]:
+        """A deterministic HEURISTIC, not a true optimizer estimate (SQLite
+        has no cost oracle):
+
+          * rows  — a cheap COUNT(*) on the base entity, capped by the
+                    plan's limit. Coarse (ignores filter selectivity), but
+                    honest and bounded.
+          * complexity — derived from how many of {joins, aggregations,
+                    group_by} the plan uses: 0 -> low, 1 -> medium, >=2 -> high.
+
+        Returns None only if the base table can't be counted. The point of
+        this method is the plumbing (adapter produces -> Sentinel consumes),
+        not accuracy.
+        """
+        body = plan.body
+        if not isinstance(body, QueryBody) or not body.entities:
+            return None
+        try:
+            cur = self.connection.execute(f"SELECT COUNT(*) FROM {self._safe_table(body.entities[0])}")
+            total = cur.fetchone()[0]
+        except Exception:
+            return None
+        rows = total
+        if rows is not None and body.limit is not None:
+            rows = min(rows, body.limit)
+        features = sum(bool(x) for x in (body.joins, body.aggregations, body.group_by))
+        complexity = "low" if features == 0 else ("medium" if features == 1 else "high")
+        return AdapterCostEstimate(rows=rows, bytes_scanned=None, complexity=complexity)
 
     # -- identifier mapping (allowlist via source model) ------------------
 

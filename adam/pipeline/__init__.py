@@ -49,6 +49,16 @@ from .sentinel import (
     evaluate as sentinel_evaluate,
     is_write,
 )
+from .adapter import (
+    ADAPTER_UNAVAILABLE,
+    AUTHENTICATION_FAILED,
+    DEGRADED,
+    OFFLINE,
+    READY,
+    REINDEXING,
+    Adapter,
+    AdapterHealth,
+)
 from .sqlite_adapter import (
     AdapterError,
     QueryResult,
@@ -97,4 +107,12 @@ __all__ = [
     "ALLOWED",
     "POLICY_DENIED",
     "APPROVAL_REQUIRED",
+    "Adapter",
+    "AdapterHealth",
+    "READY",
+    "DEGRADED",
+    "REINDEXING",
+    "OFFLINE",
+    "AUTHENTICATION_FAILED",
+    "ADAPTER_UNAVAILABLE",
 ]
