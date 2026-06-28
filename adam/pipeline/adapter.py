@@ -36,7 +36,7 @@ from .sentinel import AdapterCostEstimate
 
 if TYPE_CHECKING:  # avoid runtime coupling to SQL-specific modules
     from .execution_plan import ExecutionPlan
-    from .sqlite_adapter import QueryResult
+    from .query_result import QueryResult
 
 
 # ---------------------------------------------------------------------------

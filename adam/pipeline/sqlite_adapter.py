@@ -33,6 +33,7 @@ from typing import Any, List, Optional, Tuple
 from .adapter import READY, Adapter, AdapterHealth, health as make_health
 from .adapter_capabilities import AdapterCapabilities, SQLITE_CAPABILITIES
 from .execution_plan import ExecutionPlan, QueryBody
+from .query_result import QueryResult  # relocated (Slice 7); re-exported for back-compat
 from .sentinel import AdapterCostEstimate
 from .source_model import SourceModel
 
@@ -51,16 +52,6 @@ _JOIN_SQL = {"inner": "INNER JOIN", "left": "LEFT JOIN",
 class AdapterError(Exception):
     """Raised on a translation failure (e.g. an identifier that does not
     resolve in the source model). Distinct from a validation rejection."""
-
-
-@dataclass
-class QueryResult:
-    columns: List[str]
-    rows: List[Tuple[Any, ...]]
-    row_count: int
-    sql: str
-    params: List[Any]
-    source_lineage: dict = field(default_factory=dict)
 
 
 class SQLiteAdapter(Adapter):
