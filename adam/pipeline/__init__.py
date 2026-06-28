@@ -36,11 +36,14 @@ from .ingestion import (
     REJECTED,
     Candidate,
     EmbedFn,
+    EntitySchema,
+    FieldSchema,
     IngestionError,
     IngestionStore,
     IntrospectedSchema,
     IntrospectionFn,
     RatifiedRecord,
+    RelationshipSchema,
     schema_fingerprint,
     stub_embed,
     synthetic_introspection,
@@ -93,6 +96,7 @@ from .mysql_adapter import (
     TranslationError,
     make_pymysql_connect_fn,
 )
+from .mysql_introspector import MySQLIntrospector
 from .runner import PipelineResult, run_plan
 from .skill import (
     PLAN_PARSE_ERROR,
@@ -136,6 +140,9 @@ __all__ = [
     "IntrospectedSchema",
     "IntrospectionFn",
     "EmbedFn",
+    "EntitySchema",
+    "FieldSchema",
+    "RelationshipSchema",
     "schema_fingerprint",
     "synthetic_introspection",
     "stub_embed",
@@ -151,6 +158,7 @@ __all__ = [
     "ExecutionError",
     "AdapterConnectionError",
     "make_pymysql_connect_fn",
+    "MySQLIntrospector",
     "validate",
     "ValidationOutcome",
     "ValidationConfig",

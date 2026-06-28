@@ -158,6 +158,26 @@ incl. the SQLite≡MySQL `QueryResult`-equivalence test). **Real MySQL schema in
 TTL-caches; ABC stays SQL-free; dialect private to mysql_adapter; no base class; lazy driver
 (import adam.pipeline pulls in no adam.core and no pymysql).*
 
+**✅ Slice 7b — Real MySQL schema introspector**
+`adam/pipeline/mysql_introspector.py`: `MySQLIntrospector` fills Slice 6's `IntrospectionFn`
+seam — reads `information_schema.columns` + `key_column_usage` (READ-ONLY; only
+information_schema SELECTs) and returns a RICH `IntrospectedSchema`. The schema was enriched
+behavior-preservingly: `EntitySchema`/`FieldSchema{name,source_type,nullable,primary_key}`/
+`RelationshipSchema` (FKs), with a back-compat `field_names()` down-projection so the
+SourceModel GROUNDING contract stays field-names and the Slice-6 lifecycle/flow is unchanged
+(constructor also accepts the old name-only shapes). `schema_fingerprint` now covers
+type/nullable/PK/FK and NORMALIZES ordering internally (entities/fields/relationships sorted
+before hashing) so MySQL's nondeterministic information_schema row order can't change the
+hash — schemas differing only in type/nullable/PK/FK now get different fingerprints
+(change detection). Records carry an optional `schema_detail` (rich, audit) and reload is
+tolerant of pre-7b name-only records. Driver lazy/injected; creds not hardcoded. 377 pipeline
+tests (35 new): Tier-1 fake-information_schema (incl. read-only assertion, FK capture,
+fingerprint change-detection, order-independence, old-record reload) + Tier-2 opt-in
+integration (skips cleanly). **A non-SQL CSV adapter is Slice 9.**
+*Verified: rich introspection read-only from information_schema; grounding contract +
+lifecycle unchanged (prior 342 green); fingerprint covers detail and is order-normalized;
+reload-tolerant; lazy driver (import adam.pipeline pulls in no adam.core and no pymysql).*
+
 **⬜ Slice 8 — Pilot: one real question against a real source**  ← **REAL-DATA MILESTONE (north star)**
 Ask a real question against a real source and return a governed, attributed answer.
 Everything before this serves this milestone.

@@ -52,16 +52,136 @@ _TERMINAL = {APPROVED, REJECTED}
 # Introspected schema + seams
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Rich introspected schema (Slice 7b) — per-field detail + structured FKs.
+#
+# Behavior-preserving: the ratified SourceModel grounding contract is still
+# field-NAMES only (via `field_names()`); this just carries richer detail for
+# provenance/fingerprint/audit. The constructor accepts the OLD shapes too
+# (entities as a {name: (fieldnames,)} dict; relationships as (left, right,
+# kind) tuples) so Slice-6 code/tests/persisted records keep working.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class FieldSchema:
+    name: str
+    source_type: Optional[str] = None
+    nullable: bool = True
+    primary_key: bool = False
+
+    def to_dict(self) -> Dict:
+        return {"name": self.name, "source_type": self.source_type,
+                "nullable": bool(self.nullable), "primary_key": bool(self.primary_key)}
+
+    @classmethod
+    def from_dict(cls, d) -> "FieldSchema":
+        if isinstance(d, str):
+            return cls(name=d)
+        return cls(name=d["name"], source_type=d.get("source_type"),
+                   nullable=bool(d.get("nullable", True)),
+                   primary_key=bool(d.get("primary_key", False)))
+
+
+@dataclass(frozen=True)
+class EntitySchema:
+    name: str
+    fields: Tuple[FieldSchema, ...]
+
+    def to_dict(self) -> Dict:
+        return {"name": self.name, "fields": [f.to_dict() for f in self.fields]}
+
+    @classmethod
+    def from_dict(cls, d) -> "EntitySchema":
+        return cls(name=d["name"],
+                   fields=tuple(FieldSchema.from_dict(f) for f in d.get("fields", [])))
+
+
+@dataclass(frozen=True)
+class RelationshipSchema:
+    from_entity: str
+    from_field: str
+    to_entity: str
+    to_field: str
+    relationship_type: str = "foreign_key"
+
+    def to_dict(self) -> Dict:
+        return {"from_entity": self.from_entity, "from_field": self.from_field,
+                "to_entity": self.to_entity, "to_field": self.to_field,
+                "relationship_type": self.relationship_type}
+
+    @classmethod
+    def from_dict(cls, d) -> "RelationshipSchema":
+        return cls(from_entity=d["from_entity"], from_field=d["from_field"],
+                   to_entity=d["to_entity"], to_field=d["to_field"],
+                   relationship_type=d.get("relationship_type", "foreign_key"))
+
+
+def _coerce_entities(value) -> Tuple[EntitySchema, ...]:
+    # Back-compat: a {name: (fieldnames,)} dict OR an iterable of EntitySchema/dicts.
+    if isinstance(value, dict):
+        return tuple(
+            EntitySchema(name=k, fields=tuple(
+                f if isinstance(f, FieldSchema) else FieldSchema.from_dict(f) for f in v))
+            for k, v in value.items()
+        )
+    out = []
+    for e in value:
+        out.append(e if isinstance(e, EntitySchema) else EntitySchema.from_dict(e))
+    return tuple(out)
+
+
+def _coerce_relationships(value) -> Tuple[RelationshipSchema, ...]:
+    out = []
+    for r in value or ():
+        if isinstance(r, RelationshipSchema):
+            out.append(r)
+        elif isinstance(r, dict):
+            out.append(RelationshipSchema.from_dict(r))
+        elif isinstance(r, (tuple, list)) and len(r) >= 2:
+            # Old (left="ent.field", right="ent.field", kind) form.
+            fe, _, ff = str(r[0]).partition(".")
+            te, _, tf = str(r[1]).partition(".")
+            kind = r[2] if len(r) > 2 else "foreign_key"
+            out.append(RelationshipSchema(fe, ff, te, tf, kind))
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class IntrospectedSchema:
-    """Adapter-neutral description of a source: entities → field names, plus
-    optional relationships. Deliberately NOT SQL-specific (a real introspector
-    returns schema, not a 'SQL connection') so the seam survives Slice 7."""
-    entities: Dict[str, Tuple[str, ...]]
-    relationships: Tuple[Tuple[str, str, str], ...] = ()   # (left, right, kind)
+    """Adapter-neutral schema: entities with per-field detail + structured FK
+    relationships. NOT SQL-specific. Accepts old name-only shapes for
+    back-compat; `field_names()` is the grounding-facing down-projection."""
+    entities: Tuple[EntitySchema, ...]
+    relationships: Tuple[RelationshipSchema, ...] = ()
+    source_name: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "entities", _coerce_entities(self.entities))
+        object.__setattr__(self, "relationships", _coerce_relationships(self.relationships))
+
+    def field_names(self) -> Dict[str, Tuple[str, ...]]:
+        """Down-project to the {entity: (field_names,)} view the SourceModel
+        grounding contract uses. Back-compat accessor."""
+        return {e.name: tuple(f.name for f in e.fields) for e in self.entities}
+
+    def to_dict(self) -> Dict:
+        return {
+            "source_name": self.source_name,
+            "entities": [e.to_dict() for e in self.entities],
+            "relationships": [r.to_dict() for r in self.relationships],
+        }
+
+    @classmethod
+    def from_dict(cls, d) -> "IntrospectedSchema":
+        return cls(
+            entities=tuple(EntitySchema.from_dict(e) for e in d.get("entities", [])),
+            relationships=tuple(RelationshipSchema.from_dict(r) for r in d.get("relationships", [])),
+            source_name=d.get("source_name"),
+        )
 
 
-# (source_name) -> introspected schema. Real DB introspection is Slice 7.
+# (source_name) -> introspected schema. Real MySQL introspection is in
+# mysql_introspector.py (Slice 7b).
 IntrospectionFn = Callable[[str], IntrospectedSchema]
 
 # (source_name, schema) -> placeholder embedding reference. Real embeddings
@@ -70,17 +190,36 @@ EmbedFn = Callable[[str, IntrospectedSchema], str]
 
 
 def synthetic_introspection(source_name: str) -> IntrospectedSchema:
-    """Synthetic introspector — a fixed school-like schema so the lifecycle is
-    exercised end to end without a live DB. Matches synthetic-school-v1."""
+    """Synthetic introspector — a fixed school-like schema (now with per-field
+    detail + FK relationships) so the lifecycle exercises the rich structure
+    without a live DB. field_names() still matches synthetic-school-v1."""
     return IntrospectedSchema(
-        entities={
-            "students":   ("id", "name", "school_id", "grade_level", "enrolled"),
-            "attendance": ("id", "student_id", "school_id", "period", "rate", "date"),
-            "schools":    ("id", "name", "level"),
-        },
+        source_name=source_name,
+        entities=(
+            EntitySchema("students", (
+                FieldSchema("id", "int", False, True),
+                FieldSchema("name", "varchar", True, False),
+                FieldSchema("school_id", "int", True, False),
+                FieldSchema("grade_level", "varchar", True, False),
+                FieldSchema("enrolled", "tinyint", True, False),
+            )),
+            EntitySchema("attendance", (
+                FieldSchema("id", "int", False, True),
+                FieldSchema("student_id", "int", True, False),
+                FieldSchema("school_id", "int", True, False),
+                FieldSchema("period", "varchar", True, False),
+                FieldSchema("rate", "double", True, False),
+                FieldSchema("date", "date", True, False),
+            )),
+            EntitySchema("schools", (
+                FieldSchema("id", "int", False, True),
+                FieldSchema("name", "varchar", True, False),
+                FieldSchema("level", "varchar", True, False),
+            )),
+        ),
         relationships=(
-            ("attendance.school_id", "schools.id", "many_to_one"),
-            ("students.school_id", "schools.id", "many_to_one"),
+            RelationshipSchema("attendance", "school_id", "schools", "id", "foreign_key"),
+            RelationshipSchema("students", "school_id", "schools", "id", "foreign_key"),
         ),
     )
 
@@ -93,16 +232,37 @@ def stub_embed(source_name: str, schema: IntrospectedSchema) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Schema fingerprint (content identity — deterministic)
+# Schema fingerprint (content identity — deterministic, order-normalized)
 # ---------------------------------------------------------------------------
 
 def schema_fingerprint(schema: IntrospectedSchema) -> str:
-    """SHA-256 over the introspected schema (entities, fields, relationships).
-    Deterministic: same schema in → same fingerprint out. Independent of
-    candidate identity. Gives change/duplicate detection and provenance."""
+    """SHA-256 over the RICH schema: entity/field names PLUS source_type,
+    nullable, primary_key, and FK relationships. Deterministic.
+
+    Ordering is normalized INSIDE this function (entities by name, fields by
+    name, relationships by tuple) BEFORE hashing — never relying on the
+    introspector to sort. MySQL's information_schema returns rows in
+    server-determined order; without this, the SAME schema could hash
+    differently just because rows arrived in a different order, silently
+    breaking change/duplicate detection. The fingerprint is a function of
+    CONTENT, never row-arrival order.
+    """
     canonical = {
-        "entities": {e: list(schema.entities[e]) for e in sorted(schema.entities)},
-        "relationships": sorted([list(r) for r in schema.relationships]),
+        "entities": [
+            {
+                "name": e.name,
+                "fields": [
+                    {"name": f.name, "source_type": f.source_type,
+                     "nullable": bool(f.nullable), "primary_key": bool(f.primary_key)}
+                    for f in sorted(e.fields, key=lambda x: x.name)
+                ],
+            }
+            for e in sorted(schema.entities, key=lambda x: x.name)
+        ],
+        "relationships": sorted(
+            [[r.from_entity, r.from_field, r.to_entity, r.to_field, r.relationship_type]
+             for r in schema.relationships]
+        ),
     }
     blob = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -115,16 +275,20 @@ def schema_fingerprint(schema: IntrospectedSchema) -> str:
 @dataclass
 class Candidate:
     """Pre-approval record. Carries identity (candidate_id), content
-    (schema_fingerprint + entities), and lifecycle status — but NO version."""
+    (schema_fingerprint + entities), and lifecycle status — but NO version.
+
+    `entities` is the grounding-facing name view ({entity: (field_names,)}).
+    `schema_detail` is the full RICH schema (Slice 7b) serialized for audit;
+    it is optional so PRE-7b persisted records (which lack it) reload fine."""
     candidate_id: str
     status: str
     source_name: str
     schema_fingerprint: str
     created_at: str
     embedding_ref: Optional[str]
-    entities: Dict[str, Tuple[str, ...]]            # content, used at ratification
-    relationships: Tuple[Tuple[str, str, str], ...] = ()
+    entities: Dict[str, Tuple[str, ...]]            # name view, used at ratification
     version: Optional[str] = None                   # set only once approved+ratified
+    schema_detail: Optional[Dict] = None            # rich schema (7b); may be absent
 
     def to_dict(self) -> Dict:
         return {
@@ -135,19 +299,21 @@ class Candidate:
             "created_at": self.created_at,
             "embedding_ref": self.embedding_ref,
             "entities": {e: list(f) for e, f in self.entities.items()},
-            "relationships": [list(r) for r in self.relationships],
             "version": self.version,
+            "schema_detail": self.schema_detail,
         }
 
     @classmethod
     def from_dict(cls, d: Dict) -> "Candidate":
+        # Reload-tolerant: pre-7b records have name-only entities and no
+        # schema_detail; both load with sensible defaults (no crash).
         return cls(
             candidate_id=d["candidate_id"], status=d["status"],
             source_name=d["source_name"], schema_fingerprint=d["schema_fingerprint"],
             created_at=d["created_at"], embedding_ref=d.get("embedding_ref"),
             entities={e: tuple(f) for e, f in d.get("entities", {}).items()},
-            relationships=tuple(tuple(r) for r in d.get("relationships", [])),
             version=d.get("version"),
+            schema_detail=d.get("schema_detail"),
         )
 
 
@@ -163,6 +329,7 @@ class RatifiedRecord:
     created_at: str
     entities: Dict[str, Tuple[str, ...]]
     candidate_id: str
+    schema_detail: Optional[Dict] = None            # rich schema (7b); may be absent
 
     def to_source_model(self) -> SourceModel:
         return SourceModel(version=self.version, entities=dict(self.entities))
@@ -177,6 +344,7 @@ class RatifiedRecord:
             "created_at": self.created_at,
             "entities": {e: list(f) for e, f in self.entities.items()},
             "candidate_id": self.candidate_id,
+            "schema_detail": self.schema_detail,
         }
 
     @classmethod
@@ -187,6 +355,7 @@ class RatifiedRecord:
             approved_at=d["approved_at"], created_at=d["created_at"],
             entities={e: tuple(f) for e, f in d["entities"].items()},
             candidate_id=d.get("candidate_id", ""),
+            schema_detail=d.get("schema_detail"),
         )
 
 
@@ -272,8 +441,9 @@ class IngestionStore:
             schema_fingerprint=fingerprint,
             created_at=self._now(),
             embedding_ref=embedding_ref,
-            entities=dict(schema.entities),
-            relationships=tuple(schema.relationships),
+            # Grounding uses NAMES only; the rich detail rides along for audit.
+            entities=schema.field_names(),
+            schema_detail=schema.to_dict(),
         )
         self.candidates[candidate.candidate_id] = candidate
         self._save()
@@ -304,6 +474,7 @@ class IngestionStore:
             created_at=cand.created_at,
             entities=dict(cand.entities),
             candidate_id=cand.candidate_id,
+            schema_detail=cand.schema_detail,
         )
         # Register first so a registration conflict aborts before we mutate
         # candidate state. (Immutable: never overwrites an existing version.)
