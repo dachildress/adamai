@@ -29,13 +29,15 @@ SKIPPED = 0
 
 
 def check(name, cond, detail=""):
+    # Hardened (test_fix): a FALSE condition now RAISES so the failure surfaces
+    # loudly and located, under both pytest and the direct runner. The PASSED
+    # counter is kept for the direct runner's RESULT line.
     global PASSED, FAILED
-    if cond:
-        PASSED += 1
-        print(f"  PASS  {name}")
-    else:
+    if not cond:
         FAILED += 1
-        print(f"  FAIL  {name}" + (f"  -- {detail}" if detail else ""))
+        raise AssertionError(f"{name}" + (f" -- {detail}" if detail else ""))
+    PASSED += 1
+    print(f"  PASS  {name}")
 
 
 def skip(name, reason):
@@ -231,8 +233,11 @@ def test_dialect_stays_private():
 
 def test_integration_optin():
     if os.environ.get("ADAM_RUN_MYSQL_INTEGRATION") != "1" or not os.environ.get("ADAM_MYSQL_TEST_DSN"):
-        skip("MySQL integration suite",
-             "set ADAM_RUN_MYSQL_INTEGRATION=1 and ADAM_MYSQL_TEST_DSN to run")
+        reason = "set ADAM_RUN_MYSQL_INTEGRATION=1 and ADAM_MYSQL_TEST_DSN to run"
+        if "pytest" in sys.modules:           # real SKIP under pytest
+            import pytest
+            pytest.skip(reason)
+        skip("MySQL integration suite", reason)   # direct runner: print + return
         return
     # When env present: real driver against a real MySQL with the pre-ratified
     # fixture schema. (Connection parsing + fixture setup live here.)

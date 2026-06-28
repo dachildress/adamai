@@ -1,0 +1,8 @@
+# Test/development dependencies (not required at runtime).
+#
+# Install with:  pip install -r requirements-dev.txt
+#
+# pytest runs the governed-execution-pipeline suite authoritatively, so a
+# false assertion (a now-raising check()) surfaces as a real FAILED/ERROR
+# rather than only a nonzero exit from the homegrown runners.
+pytest==9.1.1

@@ -21,13 +21,15 @@ FAILED = 0
 
 
 def check(name, cond, detail=""):
+    # Hardened (test_fix): a FALSE condition now RAISES so the failure surfaces
+    # loudly and located, under both pytest and the direct runner. The PASSED
+    # counter is kept for the direct runner's RESULT line.
     global PASSED, FAILED
-    if cond:
-        PASSED += 1
-        print(f"  PASS  {name}")
-    else:
+    if not cond:
         FAILED += 1
-        print(f"  FAIL  {name}" + (f"  -- {detail}" if detail else ""))
+        raise AssertionError(f"{name}" + (f" -- {detail}" if detail else ""))
+    PASSED += 1
+    print(f"  PASS  {name}")
 
 
 # A representative valid query plan dict (interface §10.1 shape).
