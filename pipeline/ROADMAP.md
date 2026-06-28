@@ -94,11 +94,25 @@ connection_handle never reaches a constructed plan; ONLY skill.py imports adam.c
 `import adam.pipeline` pulls in NO adam.core; core (plan/validate/sentinel/adapter/runner)
 stays deterministic and model-free.*
 
-**⬜ Slice 5 — SkillResult + attribution**  ← **SYNTHETIC-DATA DEMO MILESTONE (Framatome-ready)**
-Typed output: data_analyzed, reasoning, assumptions, limitations, confidence,
-confidence_rationale, source_lineage; fact / inference / recommendation separation
-(Truthseeker pattern), carried as structured data not closing prose. After this,
-question → governed, attributed answer on synthetic data — demoable.
+**✅ Slice 5 — SkillResult + attribution**  ← **SYNTHETIC-DATA DEMO MILESTONE (Framatome-ready)**
+Typed `SkillResult` (objective, data_analyzed, observations, inferences, recommendations,
+assumptions, limitations, confidence, confidence_rationale, source_lineage) with the
+fact/judgment line as SEPARATE typed fields, never a prose blob. The trust boundary from
+Slice 4 (model emits body, runtime owns envelope) applied to RESULTS: the RUNTIME computes
+`observations` deterministically from QueryResult (`derive_observations`, model-free — no
+"facts" field in any model contract); the model receives observations + metadata + lineage
+(NEVER raw rows — privacy/FERPA, determinism, weaker-model friendly) and returns ONLY
+interpretation, parsed with Slice-4-grade untrusted discipline (model-asserted observations
+ignored). Two named seams (`PlanningModelFn` + `InterpretationModelFn`), default-same today,
+separately injectable, both lazy. `analyze_objective(...)` assembles it; honest on
+denial/empty/failure (no fabricated observations/inferences — POLICY_DENIED / VALIDATION_ERROR
+/ ADAPTER_UNAVAILABLE / parse-error / empty all recorded truthfully, interpretation model not
+even called). 262 pipeline tests (69 new), all with FAKE seams — no live call.
+*Verified: observations runtime-computed & deterministic (values match data); model cannot
+add/alter observations; interpretation prompt carries no "rows" key; denied/empty/failed →
+honest result; both seams distinct & lazy; `import adam.pipeline` pulls in NO adam.core; only
+skill.py touches the model seam. **Synthetic-data demo milestone reached: objective →
+governed, attributed answer.***
 
 **⬜ Slice 6 — RAG source-model ingestion + publish-time validation**
 Admin connects a source → runtime generates/embeds/ratifies a versioned source model
