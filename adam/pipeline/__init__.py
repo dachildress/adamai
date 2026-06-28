@@ -66,6 +66,16 @@ from .sqlite_adapter import (
     create_synthetic_db,
 )
 from .runner import PipelineResult, run_plan
+from .skill import (
+    PLAN_PARSE_ERROR,
+    DataIntelligenceResult,
+    PlanParseError,
+    build_system_prompt,
+    make_call_model_fn,
+    parse_body,
+    propose_plan,
+    run_objective,
+)
 
 __all__ = [
     "PLAN_VERSION",
@@ -115,4 +125,12 @@ __all__ = [
     "OFFLINE",
     "AUTHENTICATION_FAILED",
     "ADAPTER_UNAVAILABLE",
+    "run_objective",
+    "propose_plan",
+    "parse_body",
+    "build_system_prompt",
+    "make_call_model_fn",
+    "PlanParseError",
+    "PLAN_PARSE_ERROR",
+    "DataIntelligenceResult",
 ]
