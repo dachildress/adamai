@@ -114,12 +114,26 @@ honest result; both seams distinct & lazy; `import adam.pipeline` pulls in NO ad
 skill.py touches the model seam. **Synthetic-data demo milestone reached: objective →
 governed, attributed answer.***
 
-**⬜ Slice 6 — RAG source-model ingestion + publish-time validation**
-Admin connects a source → runtime generates/embeds/ratifies a versioned source model
-into the RAG corpus (connect, validate access, pull metadata for allowed entities,
-generate model, embed, admin approves, ratify with a new `source_model_version`).
-Required before real-data use. (Ahead of the Capability interface: it unblocks pilots;
-the Capability interface unblocks nothing real yet.)
+**✅ Slice 6 — Source-model ingestion lifecycle, approval & persistence**
+`adam/pipeline/ingestion.py`: governed lifecycle that PRODUCES ratified SourceModels —
+introspect (injected `IntrospectionFn`, synthetic) → generate candidate (RUNTIME,
+deterministic, no model) → embed (injected `EmbedFn`, stub) → submit (pending) →
+approve/reject (guarded state machine) → ratify (mint immutable `version`) → register into
+the ratified registry → persist (atomic JSON) → reload on startup. Records keep identity
+(`candidate_id`, per-submission) separate from content (`schema_fingerprint` = SHA-256 over
+entities/fields/relationships) separate from governance evidence (`version`, minted only at
+approval). Version scheme `<source>-v<N>` (monotonic per source); ratified versions are
+IMMUTABLE — a changed schema mints a new version (old stays groundable forever). Persistence
+(`{candidates, ratified}` JSON, temp-file + os.replace) reloads ratified models into the
+registry and candidate states on restart; isolated to the ingestion module. 304 pipeline
+tests (54 new). **Real DB introspection is Slice 7; real embeddings/vector store are a
+later slice — both are injected seams here (synthetic/stub).**
+*Verified: candidate generation deterministic & model-free (same schema → same fingerprint,
+distinct candidate_ids); guarded transitions (only approve ratifies; reject never; terminal
+can't re-transition); ratified version grounds validation end-to-end (candidate/rejected →
+SOURCE_MODEL_ERROR); persistence survives a simulated restart; failed atomic write leaves the
+existing file uncorrupted; no adam.core in ingestion; `import adam.pipeline` pulls in NO
+adam.core; Slices 1–5 green.*
 
 **⬜ Slice 7 — Real SQL adapter**
 Postgres or SQL Server adapter against a real (sanitized) source. Conforms to the
