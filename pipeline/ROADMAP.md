@@ -74,11 +74,25 @@ adapter is consumed by the EXISTING Sentinel predicate (POLICY_DENIED end-to-end
 'low' ceiling); SQLiteAdapter refactor behavior-preserving (Slice 1-2 tests green, same
 QueryResult for a normal plan).*
 
-**⬜ Slice 4 — Data Intelligence skill emits plans**
-First model involvement: a model turns an objective ("which schools have the highest
-absenteeism?") into a structured ExecutionPlan, via the existing model-registry /
-LlmClient seam (so the backend stays swappable for the in-house server). Semantic
-planning only; physical planning stays in the adapter.
+**✅ Slice 4 — Data Intelligence skill emits plans**
+`adam/pipeline/skill.py`: objective + source model → model proposes a query BODY (JSON)
+→ skill builds the ExecutionPlan with a SKILL-OWNED envelope + model body → existing
+governed pipeline. Model output is UNTRUSTED: a prompt builder (entities/fields + closed
+body schema + body-only/no-SQL/no-envelope rules), a robust single-JSON parser (handles
+prose/fences; multiple-object / SQL / non-JSON / envelope-bearing → typed
+PLAN_PARSE_ERROR), and `propose_plan` that NEVER spreads model JSON into the envelope
+(connection_handle and all envelope fields are skill-owned — the model can't steer the
+connection). Real model seam via the existing `call_model` + `load_and_validate_config`
+registry (config-driven, default `claude-sonnet-4-6`), wrapped behind an injectable
+`PlanModelFn`; the wrapper imports adam.core LAZILY so the pipeline stays model-free.
+193 pipeline tests (43 new), all with a FAKE model — no live call. Bad-but-parseable
+bodies are caught END-TO-END by existing governance: hallucinated entity →
+SOURCE_MODEL_ERROR, missing limit / ['*'] → VALIDATION_ERROR, out-of-scope → POLICY_DENIED.
+*Verified: production wrapper calls the real call_model/registry (lazy, no hardcoded
+provider); envelope built field-by-field (no ExecutionPlan(**model_json)); a model-supplied
+connection_handle never reaches a constructed plan; ONLY skill.py imports adam.core;
+`import adam.pipeline` pulls in NO adam.core; core (plan/validate/sentinel/adapter/runner)
+stays deterministic and model-free.*
 
 **⬜ Slice 5 — SkillResult + attribution**  ← **SYNTHETIC-DATA DEMO MILESTONE (Framatome-ready)**
 Typed output: data_analyzed, reasoning, assumptions, limitations, confidence,
