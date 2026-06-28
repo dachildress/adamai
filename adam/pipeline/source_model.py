@@ -72,7 +72,34 @@ RATIFIED_MODELS: Dict[str, SourceModel] = {
     SYNTHETIC_SCHOOL_V1.version: SYNTHETIC_SCHOOL_V1,
 }
 
+# The built-in versions present at import. Slice 6's ingestion lifecycle
+# registers ADDITIONAL ratified models here at runtime; reset_ratified()
+# restores just the built-ins (used by tests to avoid cross-test leakage).
+_BUILTIN_VERSIONS = frozenset(RATIFIED_MODELS.keys())
+
 
 def get_source_model(version: str) -> Optional[SourceModel]:
     """Return the ratified model for a version, or None if not ratified."""
     return RATIFIED_MODELS.get(version)
+
+
+def register_source_model(model: SourceModel) -> None:
+    """Register a ratified SourceModel so validation can ground plans against
+    its version. Used by the ingestion lifecycle (Slice 6) at ratification
+    and on reload. Ratified versions are immutable: re-registering an existing
+    version with DIFFERENT content is refused (a changed schema must mint a
+    new version, never overwrite an old one)."""
+    existing = RATIFIED_MODELS.get(model.version)
+    if existing is not None and existing != model:
+        raise ValueError(
+            f"refusing to overwrite ratified version {model.version!r} with different content"
+        )
+    RATIFIED_MODELS[model.version] = model
+
+
+def reset_ratified() -> None:
+    """Restore the ratified registry to just the built-in models. Test helper
+    so ingestion tests don't leak registered versions across the suite."""
+    for v in list(RATIFIED_MODELS.keys()):
+        if v not in _BUILTIN_VERSIONS:
+            del RATIFIED_MODELS[v]
