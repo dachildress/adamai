@@ -135,9 +135,28 @@ SOURCE_MODEL_ERROR); persistence survives a simulated restart; failed atomic wri
 existing file uncorrupted; no adam.core in ingestion; `import adam.pipeline` pulls in NO
 adam.core; Slices 1–5 green.*
 
-**⬜ Slice 7 — Real SQL adapter**
-Postgres or SQL Server adapter against a real (sanitized) source. Conforms to the
-Slice-3 adapter interface.
+**✅ Slice 7 — Real SQL adapter (MySQL)**
+`adam/pipeline/mysql_adapter.py`: `MySQLAdapter(Adapter)` executing through a real
+(pinned) PyMySQL driver, conforming to the Slice-3 `Adapter` ABC. Proves a genuinely
+different SQL dialect fits behind the contract without touching governance: MySQL `%s`
+placeholders + backtick quoting stay PRIVATE to this module (grep confirms `%s`/`` `{ ``
+appear only here — not in adapter/runner/sentinel/skill). `translate(plan)->TranslatedQuery`
+(pure) separated from `execute`; real `health()` (READY/OFFLINE/AUTHENTICATION_FAILED via
+CONNECTION_ERROR) with a short TTL cache; typed errors (IDENTIFIER_RESOLUTION/TRANSLATION/
+EXECUTION/CONNECTION); allowlist-grounded identifiers + fully-parameterized values (same
+injection-safety discipline as SQLite). Driver imported LAZILY (injected-connection seam),
+so the pipeline imports and Tier-1 tests run with no server / no driver. **NO shared SQL
+base class** — MySQLAdapter's only base is `Adapter` (asserted); sharing would be via free
+helpers, not inheritance. Source-neutral refactors: `QueryResult` relocated to
+`query_result.py` (re-exported), runner default-adapter is now an overridable factory.
+342 pipeline tests (38 new): Tier-1 fake-backed (run everywhere) + Tier-2 opt-in MySQL
+integration (env-gated `ADAM_RUN_MYSQL_INTEGRATION`/`ADAM_MYSQL_TEST_DSN`, skips cleanly,
+incl. the SQLite≡MySQL `QueryResult`-equivalence test). **Real MySQL schema introspection
+(filling Slice 6's IntrospectionFn) is Slice 7b; a non-SQL CSV adapter is Slice 9.**
+*Verified: refactors behavior-preserving (prior 304 green); translation allowlist-grounded +
+%s-parameterized (injection probe lands in params); health reflects real connection state +
+TTL-caches; ABC stays SQL-free; dialect private to mysql_adapter; no base class; lazy driver
+(import adam.pipeline pulls in no adam.core and no pymysql).*
 
 **⬜ Slice 8 — Pilot: one real question against a real source**  ← **REAL-DATA MILESTONE (north star)**
 Ask a real question against a real source and return a governed, attributed answer.

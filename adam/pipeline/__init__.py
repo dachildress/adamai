@@ -76,11 +76,22 @@ from .adapter import (
     Adapter,
     AdapterHealth,
 )
+from .query_result import QueryResult
 from .sqlite_adapter import (
     AdapterError,
-    QueryResult,
     SQLiteAdapter,
     create_synthetic_db,
+)
+from .mysql_adapter import (
+    MYSQL_CAPABILITIES,
+    AdapterConnectionError,
+    ExecutionError,
+    IdentifierResolutionError,
+    MySQLAdapter,
+    MySQLAdapterError,
+    TranslatedQuery,
+    TranslationError,
+    make_pymysql_connect_fn,
 )
 from .runner import PipelineResult, run_plan
 from .skill import (
@@ -131,6 +142,15 @@ __all__ = [
     "PENDING",
     "APPROVED",
     "REJECTED",
+    "MySQLAdapter",
+    "MYSQL_CAPABILITIES",
+    "TranslatedQuery",
+    "MySQLAdapterError",
+    "IdentifierResolutionError",
+    "TranslationError",
+    "ExecutionError",
+    "AdapterConnectionError",
+    "make_pymysql_connect_fn",
     "validate",
     "ValidationOutcome",
     "ValidationConfig",

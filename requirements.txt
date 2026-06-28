@@ -41,3 +41,9 @@ python-docx==1.2.0
 # only; scanned/image-based PDFs require OCR which is out of scope for v1
 # and will soft-fail with a clear warning.
 pypdf==6.14.2
+
+# MySQL driver for the governed-execution-pipeline MySQLAdapter (Slice 7).
+# Imported LAZILY by adam/pipeline/mysql_adapter.py — only needed when a real
+# MySQL connection is opened; the pipeline imports and its fake-backed tests
+# run without it. Pure-Python (no build deps).
+PyMySQL==1.2.0

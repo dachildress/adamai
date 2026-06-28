@@ -25,8 +25,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
+from typing import Callable
+
 from .adapter import ADAPTER_UNAVAILABLE, Adapter, AdapterHealth
 from .execution_plan import ExecutionPlan
+from .query_result import QueryResult
 from .sentinel import (
     AdapterCostEstimate,
     GovernanceConfig,
@@ -35,7 +38,7 @@ from .sentinel import (
     evaluate as sentinel_evaluate,
 )
 from .source_model import SYNTHETIC_SCHOOL_V1, SourceModel
-from .sqlite_adapter import QueryResult, SQLiteAdapter
+from .sqlite_adapter import SQLiteAdapter
 from .validation import ValidationConfig, ValidationOutcome, validate
 
 DEFAULT_GOVERNANCE = GovernanceConfig(read_only=True)
@@ -47,6 +50,17 @@ def _default_scope(source_model: SourceModel) -> ScopeConfig:
         denied_entities=set(),
         denied_fields=set(),
     )
+
+
+# How the runner builds an adapter when none is injected. SQLite is the
+# default, but this is an OVERRIDABLE seam (Slice 7) — a caller can pass a
+# different factory so e.g. a MySQLAdapter becomes the default without editing
+# the runner. The runner itself stays adapter-agnostic.
+AdapterFactory = Callable[[Any, SourceModel], Adapter]
+
+
+def default_sqlite_adapter_factory(connection: Any, source_model: SourceModel) -> Adapter:
+    return SQLiteAdapter(connection, source_model)
 
 
 @dataclass
@@ -71,11 +85,13 @@ def run_plan(
     governance: Optional[GovernanceConfig] = None,
     scope: Optional[ScopeConfig] = None,
     cost_estimate: Optional[AdapterCostEstimate] = None,
+    adapter_factory: AdapterFactory = default_sqlite_adapter_factory,
 ) -> PipelineResult:
     governance = governance or DEFAULT_GOVERNANCE
     scope = scope if scope is not None else _default_scope(source_model)
     if adapter is None:
-        adapter = SQLiteAdapter(connection, source_model)
+        # No adapter injected → build one via the (overridable) factory.
+        adapter = adapter_factory(connection, source_model)
 
     warnings: List[str] = []
 
