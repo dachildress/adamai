@@ -160,6 +160,41 @@ def test_join_capability():
     check("join rejected when supports_join=false", out.category == CAPABILITY_ERROR, str(out))
 
 
+def test_closed_enum_rejections_unchanged_with_hint():
+    # fix_sql: enum rejections now append the allowed set (message-only). What is
+    # accepted is unchanged: an out-of-set token / wrong case is still rejected.
+    d = base_plan_dict()
+    d["body"]["filters"] = [{"field": "schools.level", "op": "contains", "value": "x"}]
+    out = v(d)
+    check("unknown filter op rejected", not out.ok and out.category == VALIDATION_ERROR, str(out))
+    check("filter op error lists allowed set", "allowed:" in (out.detail or "") and "eq" in (out.detail or ""), out.detail)
+    # Uppercase order direction still rejected (set is lowercase, case-sensitive).
+    d2 = base_plan_dict()
+    d2["body"]["order_by"] = [{"field": "avg_rate", "direction": "DESC"}]
+    out2 = v(d2)
+    check("uppercase order direction still rejected", not out2.ok and out2.category == VALIDATION_ERROR, str(out2))
+    check("direction error lists allowed set", "asc" in (out2.detail or "") and "desc" in (out2.detail or ""), out2.detail)
+    # limit > 1000 still rejected.
+    d3 = base_plan_dict(); d3["body"]["limit"] = 5000
+    out3 = v(d3)
+    check("limit over 1000 still rejected", not out3.ok and out3.category == VALIDATION_ERROR, str(out3))
+
+
+def test_bare_entity_join_key_still_rejected():
+    # fix_join: validation must still reject an unqualified (bare-entity) join
+    # key — you join on a column, not a table. The fix is prompt-only; the
+    # error text now hints the expected form but acceptance is unchanged.
+    d = base_plan_dict()
+    d["body"]["joins"] = [{"left": "students", "right": "schools.id", "type": "inner"}]
+    out = v(d)
+    check("bare-entity join key rejected", not out.ok and out.category == SOURCE_MODEL_ERROR, str(out))
+    check("error hints expected entity.field form", "entity.field" in (out.detail or ""), out.detail)
+    # A qualified key on the same join validates (acceptance unchanged).
+    d["body"]["joins"] = [{"left": "attendance.school_id", "right": "schools.id", "type": "inner"}]
+    out2 = v(d)
+    check("qualified join key still validates", out2.ok, f"{out2.category}: {out2.detail}")
+
+
 def test_credential_detection():
     # A credential-like value injected into a filter value.
     creds = [
@@ -236,6 +271,8 @@ def main():
         test_unresolved_entity,
         test_unresolved_field,
         test_join_capability,
+        test_closed_enum_rejections_unchanged_with_hint,
+        test_bare_entity_join_key_still_rejected,
         test_credential_detection,
         test_connection_handle_not_falsely_rejected,
         test_aggregation_fn_case_insensitive,
