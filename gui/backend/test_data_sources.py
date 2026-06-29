@@ -328,6 +328,103 @@ def test_query_body_has_no_credentials():
         check(f"query body has no '{bad}' field", bad not in fields)
 
 
+# ---- Model-seam provider (buildquery follow-up) ----
+
+import contextlib  # noqa: E402
+import os  # noqa: E402
+from backend import data_sources  # noqa: E402
+
+
+@contextlib.contextmanager
+def env(**overrides):
+    """Set/unset env vars within the block; restore after. A value of None
+    deletes the var."""
+    saved = {k: os.environ.get(k) for k in overrides}
+    try:
+        for k, v in overrides.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        yield
+    finally:
+        for k, old in saved.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
+
+
+def test_provider_none_when_key_unset():
+    # Default model (Operator -> claude-sonnet-4-6 -> anthropic). With no
+    # anthropic key, the provider is unusable -> None.
+    with env(ADAM_DATA_INTELLIGENCE_MODEL_ID=None, ADAM_DATA_INTELLIGENCE_AGENT=None,
+             ANTHROPIC_API_KEY=None, OPENAI_API_KEY=None):
+        check("provider None when selected provider key unset",
+              data_sources.default_model_fns_provider() is None)
+
+
+def test_provider_none_when_model_unknown():
+    with env(ADAM_DATA_INTELLIGENCE_MODEL_ID="no-such-model", ANTHROPIC_API_KEY="x"):
+        check("provider None when model id not in models.json",
+              data_sources.default_model_fns_provider() is None)
+
+
+def test_single_provider_usability_no_trap():
+    # Selected model's provider key set (anthropic), unrelated provider key
+    # (openai) UNSET. The all-providers config validator would raise here, but
+    # the provider must still be usable. Guards the ConfigError trap.
+    with env(ADAM_DATA_INTELLIGENCE_MODEL_ID="claude-sonnet-4-6",
+             ANTHROPIC_API_KEY="anthropic-key", OPENAI_API_KEY=None):
+        fns = data_sources.default_model_fns_provider()
+        check("usable with selected provider key only (no all-providers trap)",
+              fns is not None and len(fns) == 2)
+
+
+def test_planning_fn_calls_call_model_unchanged():
+    from adam.core import client_dispatch
+    captured = {}
+
+    def fake_call_model(*, model_id, system_prompt, messages, max_tokens, temperature, models, providers):
+        captured.update(model_id=model_id, system_prompt=system_prompt, messages=messages)
+        return "RAW MODEL OUTPUT"
+
+    orig = client_dispatch.call_model
+    client_dispatch.call_model = fake_call_model
+    try:
+        with env(ADAM_DATA_INTELLIGENCE_MODEL_ID="claude-sonnet-4-6", ANTHROPIC_API_KEY="k"):
+            fns = data_sources.default_model_fns_provider()
+            check("provider returns two callables", fns is not None and len(fns) == 2)
+            planning_fn, interp_fn = fns
+            out = planning_fn("SYS", "what widgets exist?")
+            check("planning fn returns model string unchanged", out == "RAW MODEL OUTPUT")
+            check("call_model got the objective in messages",
+                  captured["messages"] == [{"role": "user", "content": "what widgets exist?"}])
+            check("call_model got the configured model id", captured["model_id"] == "claude-sonnet-4-6")
+    finally:
+        client_dispatch.call_model = orig
+
+
+def test_model_error_surfaces_clean_not_500():
+    from fastapi.testclient import TestClient
+    with tempfile.TemporaryDirectory() as raw:
+        app = make_app(Path(raw)); c = TestClient(app)
+        admin_cook, admin_hdr = ctx("admin")
+        version = _ratify_widgets(app, c, admin_cook, admin_hdr)
+        # A provider whose planning fn raises (provider error after retries).
+        def boom(*a, **k):
+            raise RuntimeError("provider exploded after retries")
+        app.state.pipeline_model_fns_provider = lambda: (boom, boom)
+        app.state.resolve_connection = lambda h: (lambda: FakeConn())
+        ucook, uhdr = ctx("pilot")
+        r = c.post("/api/data-intelligence/query", cookies=ucook, headers=uhdr,
+                   json={"version": version, "objective": "x"})
+        check("model error -> 200 (not 500)", r.status_code == 200, f"got {r.status_code}")
+        check("model error -> clean QUERY_FAILED (no result, no stack)",
+              r.json().get("error") == "QUERY_FAILED", str(r.json()))
+        check("no fabricated result on model error", r.json().get("result") is None)
+
+
 def main():
     print("Data Sources web integration tests")
     print("=" * 60)
@@ -342,6 +439,11 @@ def main():
         test_query_model_not_configured,
         test_query_requires_csrf_and_auth,
         test_query_body_has_no_credentials,
+        test_provider_none_when_key_unset,
+        test_provider_none_when_model_unknown,
+        test_single_provider_usability_no_trap,
+        test_planning_fn_calls_call_model_unchanged,
+        test_model_error_surfaces_clean_not_500,
     ]:
         print(f"\n{t.__name__}:")
         t()
