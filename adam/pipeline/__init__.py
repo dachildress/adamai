@@ -57,7 +57,9 @@ from .validation import (
     scan_for_credentials,
     validate,
 )
-from .sentinel_stub import SentinelDecision, sentinel_check
+# NOTE: sentinel_stub (sentinel_check / SentinelDecision) is intentionally NOT
+# re-exported. The real pipeline uses sentinel_evaluate (sentinel.py); the stub
+# is kept test-only so new code can't grab it by import/autocomplete.
 from .sentinel import (
     ALLOWED,
     APPROVAL_REQUIRED,
@@ -166,8 +168,6 @@ __all__ = [
     "VALIDATION_ERROR",
     "SOURCE_MODEL_ERROR",
     "CAPABILITY_ERROR",
-    "sentinel_check",
-    "SentinelDecision",
     "SQLiteAdapter",
     "QueryResult",
     "AdapterError",

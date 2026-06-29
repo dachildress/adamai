@@ -533,6 +533,78 @@ export async function resetUserPassword(username) {
 }
 
 
+// ============================================================
+// Data Sources — governed query pipeline (admin ingest + user query)
+// ============================================================
+
+// Admin: test a MySQL connection. Returns a coarse {status, ok, table_count}.
+// The password is sent (admin-only) but never returned.
+export async function testMysqlConnection(params) {
+  const r = await fetch(`${API_BASE}/admin/data-sources/mysql/test`, {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify(params),
+  })
+  return asJsonOrThrow(r)
+}
+
+// Admin: introspect a MySQL schema into a pending candidate (no ratify).
+export async function introspectMysqlSource(params) {
+  const r = await fetch(`${API_BASE}/admin/data-sources/mysql/introspect`, {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify(params),
+  })
+  return asJsonOrThrow(r)
+}
+
+export async function fetchSourceModelCandidates() {
+  const r = await fetch(`${API_BASE}/admin/source-model-candidates`, { credentials: 'include' })
+  return asJsonOrThrow(r)
+}
+
+export async function approveSourceModelCandidate(candidateId) {
+  const r = await fetch(
+    `${API_BASE}/admin/source-model-candidates/${encodeURIComponent(candidateId)}/approve`,
+    { method: 'POST', headers: csrfHeaders(), credentials: 'include' },
+  )
+  return asJsonOrThrow(r)
+}
+
+export async function rejectSourceModelCandidate(candidateId) {
+  const r = await fetch(
+    `${API_BASE}/admin/source-model-candidates/${encodeURIComponent(candidateId)}/reject`,
+    { method: 'POST', headers: csrfHeaders(), credentials: 'include' },
+  )
+  return asJsonOrThrow(r)
+}
+
+export async function fetchSourceModels() {
+  const r = await fetch(`${API_BASE}/admin/source-models`, { credentials: 'include' })
+  return asJsonOrThrow(r)
+}
+
+// User-readable list of ratified sources for the query picker (non-secret).
+export async function fetchQuerySourceModels() {
+  const r = await fetch(`${API_BASE}/data-intelligence/source-models`, { credentials: 'include' })
+  return asJsonOrThrow(r)
+}
+
+// User: run a governed query. Body is { version, objective } ONLY — never
+// connection credentials.
+export async function runDataIntelligenceQuery(version, objective) {
+  const r = await fetch(`${API_BASE}/data-intelligence/query`, {
+    method: 'POST',
+    headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify({ version, objective }),
+  })
+  return asJsonOrThrow(r)
+}
+
+
 // Slice 4a: resume a session paused at the human-review gate. decision is
 // 'approve' | 'redirect' | 'reject'; guidance is free-text direction; files
 // are optional documents to inject (e.g. a privacy policy the agent asked

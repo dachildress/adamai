@@ -7,6 +7,8 @@ import { PromptBar } from './components/PromptBar'
 import { NewSessionModal } from './components/NewSessionModal'
 import { ResumeModal } from './components/ResumeModal'
 import { GovernanceAdminModal } from './components/GovernanceAdminModal'
+import { DataSourcesModal } from './components/DataSourcesModal'
+import { QueryDataSourceModal } from './components/QueryDataSourceModal'
 import { LoginPage } from './components/LoginPage'
 import { ChangePasswordPage } from './components/ChangePasswordPage'
 import {
@@ -52,6 +54,8 @@ export default function App() {
   const [reviewPaused, setReviewPaused] = useState(null)
   const [reviewMessage, setReviewMessage] = useState(null)
   const [showGovernanceAdmin, setShowGovernanceAdmin] = useState(false)
+  const [showDataSources, setShowDataSources] = useState(false)
+  const [showQuery, setShowQuery] = useState(false)
 
   const [state, dispatch] = useReducer(sessionReducer, EMPTY_STATE)
 
@@ -295,6 +299,8 @@ export default function App() {
         connectionStatus={connectionStatus}
         onLogout={handleLogout}
         onOpenGovernance={() => setShowGovernanceAdmin(true)}
+        onOpenDataSources={() => setShowDataSources(true)}
+        onOpenQuery={() => setShowQuery(true)}
       />
       {reviewMessage && (
         <div className="review-toast" role="status">{reviewMessage}</div>
@@ -370,6 +376,14 @@ export default function App() {
           onClose={() => setShowGovernanceAdmin(false)}
           currentUsername={user.username}
         />
+      )}
+
+      {showDataSources && user.role === 'admin' && (
+        <DataSourcesModal onClose={() => setShowDataSources(false)} />
+      )}
+
+      {showQuery && (
+        <QueryDataSourceModal onClose={() => setShowQuery(false)} />
       )}
     </div>
   )

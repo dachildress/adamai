@@ -50,12 +50,14 @@ from sse_starlette.sse import EventSourceResponse
 try:
     from . import auth  # when imported as backend.server
     from . import csrf
+    from . import data_sources
     from . import governance
     from . import ratelimit
     from . import verification
 except ImportError:
     import auth          # when run directly
     import csrf
+    import data_sources
     import governance
     import ratelimit
     import verification
@@ -261,6 +263,29 @@ class EditUserRequest(BaseModel):
     role:                  Optional[str] = Field(None, max_length=32)
     sessions_remaining:    Optional[int] = None
     max_turns_per_session: Optional[int] = None
+
+
+# Data Sources (governed query pipeline) request bodies. Module-level.
+# `password` may be received for admin test/introspect; it is used to build a
+# connect_fn and NEVER echoed back, persisted, or logged.
+class MySQLTestRequest(BaseModel):
+    host:     str = Field(..., min_length=1, max_length=255)
+    port:     int = 3306
+    user:     str = Field(..., min_length=1, max_length=128)
+    password: str = Field("", max_length=512)
+    database: str = Field(..., min_length=1, max_length=128)
+
+
+class MySQLIntrospectRequest(MySQLTestRequest):
+    source_name: str = Field(..., min_length=1, max_length=128)
+
+
+# The USER query body — by firm requirement carries NO connection credentials
+# (no host/user/password/database/dsn). A source is identified by its ratified
+# version only; the read-only connection resolves server-side from the handle.
+class DataIntelligenceQueryRequest(BaseModel):
+    version:   str = Field(..., min_length=1, max_length=128)
+    objective: str = Field(..., min_length=1, max_length=4000)
 
 
 # ============================================================
@@ -1332,6 +1357,19 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
     # and is easy to swap in tests. In-memory, single-process, resets on
     # restart -- see ratelimit.py for the documented limitations.
     app.state.login_rate_limiter = ratelimit.LoginRateLimiter()
+
+    # Data Sources: the ONE canonical ingestion store path lives under
+    # adam_root; every data-source route resolves the store via
+    # data_sources.get_pipeline_ingestion_store(). The model-fns and
+    # connection-resolution SEAMS default to "not configured" (live query ->
+    # MODEL_NOT_CONFIGURED / CONNECTION_NOT_CONFIGURED); tests override them on
+    # app.state with fakes to exercise the full governed flow.
+    data_sources.init_data_sources(adam_root)
+    app.state.pipeline_model_fns_provider = data_sources.default_model_fns_provider
+    app.state.resolve_connection = data_sources.default_resolve_connection
+    # connect_factory(**kwargs) -> connect_fn for admin test/introspect. Real
+    # PyMySQL by default; tests inject a fake so no live server is needed.
+    app.state.mysql_connect_factory = data_sources.make_pymysql_connect_fn
 
     # CORS: now restrictive because we use cookies. allow_credentials=True
     # is required for the browser to send the login cookie on cross-
@@ -2587,6 +2625,170 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
             "user": _user_summary(username),
             "temporary_password": temp_password,
         }
+
+    # ============================================================
+    # Data Sources — governed query pipeline (web integration)
+    #
+    # Admin: configure connection -> test -> introspect -> review -> approve.
+    # User: pick a ratified source by version, ask one objective.
+    # All ingestion + query route through data_sources, which uses the ONE
+    # canonical IngestionStore and the REAL pipeline (validation -> Sentinel ->
+    # adapter -> SkillResult). Passwords are never echoed/persisted/logged; the
+    # user query body carries NO credentials.
+    # ============================================================
+
+    @app.post("/api/admin/data-sources/mysql/test")
+    def data_source_mysql_test(
+        body: MySQLTestRequest,
+        request: Request,
+        admin: Dict[str, Any] = Depends(require_admin),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
+    ) -> Dict[str, Any]:
+        """Test a MySQL connection; return a COARSE status + base-table count.
+        The password is used to connect and never echoed/persisted/logged."""
+        factory = getattr(request.app.state, "mysql_connect_factory",
+                          data_sources.make_pymysql_connect_fn)
+        return data_sources.test_mysql_connection(
+            host=body.host, port=body.port, user=body.user,
+            password=body.password, database=body.database, connect_factory=factory,
+        )
+
+    @app.post("/api/admin/data-sources/mysql/introspect")
+    def data_source_mysql_introspect(
+        body: MySQLIntrospectRequest,
+        request: Request,
+        admin: Dict[str, Any] = Depends(require_admin),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
+    ) -> Dict[str, Any]:
+        """Introspect a real MySQL schema into a PENDING candidate (no ratify).
+        Uses the real MySQLIntrospector explicitly (never the synthetic default).
+        Returns the candidate incl. full schema_detail; never the password."""
+        factory = getattr(request.app.state, "mysql_connect_factory",
+                          data_sources.make_pymysql_connect_fn)
+        try:
+            candidate = data_sources.introspect_mysql_source(
+                host=body.host, port=body.port, user=body.user,
+                password=body.password, database=body.database,
+                source_name=body.source_name, connect_factory=factory,
+            )
+        except Exception:
+            # Scrub: a driver error can contain the DSN/password — coarse only.
+            raise HTTPException(status_code=400, detail="introspection failed: could not read the source schema")
+        return candidate.to_dict()
+
+    @app.get("/api/admin/source-model-candidates")
+    def list_source_model_candidates(
+        admin: Dict[str, Any] = Depends(require_admin),
+    ) -> Dict[str, Any]:
+        store = data_sources.get_pipeline_ingestion_store()
+        return {"candidates": [c.to_dict() for c in store.list_candidates()]}
+
+    @app.post("/api/admin/source-model-candidates/{candidate_id}/approve")
+    def approve_source_model_candidate(
+        candidate_id: str,
+        admin: Dict[str, Any] = Depends(require_admin),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
+    ) -> Dict[str, Any]:
+        """Approve -> ratify (mint immutable version), recording the admin's
+        username. Terminal: re-approving returns a clean 409 with the existing
+        ratified record (never a 500)."""
+        with data_sources.store_lock():
+            store = data_sources.get_pipeline_ingestion_store()
+            cand = store.get_candidate(candidate_id)
+            if cand is None:
+                raise HTTPException(status_code=404, detail="candidate not found")
+            if cand.status == "approved" and cand.version:
+                existing = store.ratified.get(cand.version)
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "candidate already approved",
+                        "ratified": existing.to_dict() if existing else None,
+                    },
+                )
+            try:
+                record = store.approve(candidate_id, approved_by=admin["username"])
+            except Exception as e:
+                raise HTTPException(status_code=409, detail=f"cannot approve: {e}") from e
+        return record.to_dict()
+
+    @app.post("/api/admin/source-model-candidates/{candidate_id}/reject")
+    def reject_source_model_candidate(
+        candidate_id: str,
+        admin: Dict[str, Any] = Depends(require_admin),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
+    ) -> Dict[str, Any]:
+        with data_sources.store_lock():
+            store = data_sources.get_pipeline_ingestion_store()
+            cand = store.get_candidate(candidate_id)
+            if cand is None:
+                raise HTTPException(status_code=404, detail="candidate not found")
+            try:
+                updated = store.reject(candidate_id)
+            except Exception as e:
+                raise HTTPException(status_code=409, detail=f"cannot reject: {e}") from e
+        return updated.to_dict()
+
+    @app.get("/api/admin/source-models")
+    def list_source_models(
+        admin: Dict[str, Any] = Depends(require_admin),
+    ) -> Dict[str, Any]:
+        store = data_sources.get_pipeline_ingestion_store()
+        return {"source_models": [
+            {
+                "version": r.version,
+                "source_name": r.source_name,
+                "entity_count": len(r.entities),
+                "approved_by": r.approved_by,
+                "approved_at": r.approved_at,
+            }
+            for r in store.list_ratified()
+        ]}
+
+    @app.post("/api/data-intelligence/query")
+    def data_intelligence_query(
+        body: DataIntelligenceQueryRequest,
+        request: Request,
+        user: Dict[str, Any] = Depends(require_user),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
+    ) -> Dict[str, Any]:
+        """Run a governed query against a ratified source. Body is {version,
+        objective} ONLY — no credentials. Returns the typed SkillResult (facts
+        vs. judgment) or a config/blocked outcome (never a 500)."""
+        provider = getattr(request.app.state, "pipeline_model_fns_provider",
+                           data_sources.default_model_fns_provider)
+        resolver = getattr(request.app.state, "resolve_connection",
+                           data_sources.default_resolve_connection)
+        try:
+            model_fns = provider()
+        except Exception:
+            model_fns = None
+        out = data_sources.run_governed_query(
+            version=body.version, objective=body.objective, user=user,
+            model_fns=model_fns, resolve_connection=resolver,
+        )
+        if out.get("error") == "UNKNOWN_VERSION":
+            raise HTTPException(status_code=404, detail="unknown source model version")
+        return out
+
+    @app.get("/api/data-intelligence/source-models")
+    def data_intelligence_source_models(
+        user: Dict[str, Any] = Depends(require_user),
+    ) -> Dict[str, Any]:
+        """User-readable list of ratified sources for the query picker. Returns
+        only non-secret metadata (version / source_name / approved_at) — no
+        connection details. Distinct from the admin list (same data, user auth)
+        so any authenticated user can choose a source to query."""
+        store = data_sources.get_pipeline_ingestion_store()
+        return {"source_models": [
+            {
+                "version": r.version,
+                "source_name": r.source_name,
+                "entity_count": len(r.entities),
+                "approved_at": r.approved_at,
+            }
+            for r in store.list_ratified()
+        ]}
 
     @app.get("/api/sessions/{session_id}/process_logs")
     def get_process_logs(session_id: str, request: Request) -> Dict[str, Any]:

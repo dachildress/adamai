@@ -5,7 +5,7 @@
  *   - sessions_remaining indicator (pilots only)
  *   - logout button next to the avatar
  */
-export function Header({ user, state, selectedSession, connectionStatus, onLogout, onOpenGovernance }) {
+export function Header({ user, state, selectedSession, connectionStatus, onLogout, onOpenGovernance, onOpenDataSources, onOpenQuery }) {
   const isActive = state && !state.ended && state.session_id != null
   const sessionStatus = state?.ended ? 'complete' : (isActive ? 'active' : 'idle')
 
@@ -87,6 +87,26 @@ export function Header({ user, state, selectedSession, connectionStatus, onLogou
       </div>
 
       <div className="header__director">
+        {onOpenQuery && (
+          <button
+            type="button"
+            className="header__gov-btn"
+            onClick={onOpenQuery}
+            title="Query an approved data source"
+          >
+            Query Data
+          </button>
+        )}
+        {user?.role === 'admin' && onOpenDataSources && (
+          <button
+            type="button"
+            className="header__gov-btn"
+            onClick={onOpenDataSources}
+            title="Configure and approve data sources"
+          >
+            Data Sources
+          </button>
+        )}
         {user?.role === 'admin' && onOpenGovernance && (
           <button
             type="button"
