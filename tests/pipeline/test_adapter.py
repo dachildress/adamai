@@ -14,8 +14,11 @@ sys.path.insert(0, str(PROJ_ROOT))
 
 from adam.pipeline import (  # noqa: E402
     ExecutionPlan, SQLITE_CAPABILITIES, SQLiteAdapter, SYNTHETIC_SCHOOL_V1,
-    create_synthetic_db, sentinel_check, validate, ValidationConfig,
+    create_synthetic_db, validate, ValidationConfig,
 )
+# sentinel_stub is test-only (no longer a public pipeline export); import the
+# stub directly for the legacy stub-behavior check.
+from adam.pipeline.sentinel_stub import sentinel_check  # noqa: E402
 
 PASSED = 0
 FAILED = 0
