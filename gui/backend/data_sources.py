@@ -20,6 +20,7 @@ Connection ops return coarse states only — never raw driver text.
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from pathlib import Path
@@ -181,11 +182,97 @@ def pipeline_governance_for(user: Dict[str, Any], source_model) -> Tuple[Governa
 # Injectable seams (defaults; overridden on app.state in tests)
 # ---------------------------------------------------------------------------
 
+# Model selection / call tuning — env-configurable, never hardcoded model
+# literals. Default model id derives from an existing agent's model_id.
+_DEFAULT_AGENT = "Operator"   # ADAM's structured-output agent; closest analog to
+                              # emitting a structured query body.
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _resolve_model_id(models: Dict[str, Any], agents: Dict[str, Any]) -> Optional[str]:
+    """Model id for data-intelligence queries, in priority order:
+      1. $ADAM_DATA_INTELLIGENCE_MODEL_ID (explicit override);
+      2. else the model_id of an existing agent ($ADAM_DATA_INTELLIGENCE_AGENT,
+         default 'Operator') read from agents.json — a config value, not a
+         hardcoded model string.
+    Returns None if unresolved or not present in models."""
+    mid = os.environ.get("ADAM_DATA_INTELLIGENCE_MODEL_ID", "").strip()
+    if mid:
+        return mid if mid in models else None
+    agent_name = os.environ.get("ADAM_DATA_INTELLIGENCE_AGENT", "").strip() or _DEFAULT_AGENT
+    agent = agents.get(agent_name) or {}
+    candidate = agent.get("model_id")
+    return candidate if candidate in models else None
+
+
 def default_model_fns_provider() -> Optional[ModelFns]:
-    """No safe in-process web model seam is wired this slice, so live queries
-    return MODEL_NOT_CONFIGURED. Tests inject fake (planning, interpretation)
-    fns via app.state to exercise the full governed flow."""
-    return None
+    """Real in-process model seam for the web query path.
+
+    Returns (planning_fn, interpretation_fn), thin wrappers over ADAM's shared
+    `client_dispatch.call_model` (same machinery the agent loop uses; provider/
+    key/retry come from config + env — configurable, not hardcoded). Returns
+    None -> the query path returns MODEL_NOT_CONFIGURED (never a 500) when a
+    usable model can't be resolved.
+
+    Usability depends ONLY on the SELECTED model's provider key — never on
+    unrelated providers. We load the raw config via config_loader's shared JSON
+    reader (NOT load_and_validate_config, which validates EVERY provider's
+    api_key_env and would raise ConfigError when, e.g., only ANTHROPIC_API_KEY
+    is set — turning a usable Anthropic setup into a false MODEL_NOT_CONFIGURED).
+    """
+    from adam.core import client_dispatch, config_loader  # lazy: keep GUI import light
+    try:
+        providers = config_loader._load_json(config_loader.PROVIDERS_PATH, "providers.json")
+        models = config_loader._load_json(config_loader.MODELS_PATH, "models.json")
+        agents = config_loader._load_json(config_loader.AGENTS_PATH, "agents.json")
+    except Exception:
+        return None
+
+    model_id = _resolve_model_id(models, agents)
+    if not model_id or model_id not in models:
+        return None
+    provider_id = models[model_id].get("provider")
+    if not provider_id or provider_id not in providers:
+        return None
+    api_key_env = providers[provider_id].get("api_key_env")
+    if not api_key_env or not os.environ.get(api_key_env, "").strip():
+        return None
+
+    max_tokens = _env_int("ADAM_DATA_INTELLIGENCE_MAX_TOKENS", 1024)
+    temperature = _env_float("ADAM_DATA_INTELLIGENCE_TEMPERATURE", 0.0)  # low: planning must emit parseable JSON
+
+    def planning_fn(system_prompt: str, objective: str) -> str:
+        # Returns the raw model string unchanged; the pipeline's parse_body
+        # handles it. No post-processing, no swallowing of model errors.
+        return client_dispatch.call_model(
+            model_id=model_id, system_prompt=system_prompt,
+            messages=[{"role": "user", "content": objective}],
+            max_tokens=max_tokens, temperature=temperature,
+            models=models, providers=providers,
+        )
+
+    def interpretation_fn(system_prompt: str, observations: str) -> str:
+        return client_dispatch.call_model(
+            model_id=model_id, system_prompt=system_prompt,
+            messages=[{"role": "user", "content": observations}],
+            max_tokens=max_tokens, temperature=temperature,
+            models=models, providers=providers,
+        )
+
+    return (planning_fn, interpretation_fn)
 
 
 def default_resolve_connection(handle: str) -> Optional[Callable[[], Any]]:
@@ -251,15 +338,23 @@ def run_governed_query(
     adapter = MySQLAdapter(model, connect_fn=connect_fn)
     governance, scope = pipeline_governance_for(user, model)
 
-    result: SkillResult = analyze_objective(
-        objective,
-        connection=None,
-        source_model=model,
-        planning_model_fn=planning_fn,
-        interpretation_model_fn=interpretation_fn,
-        connection_handle=version,
-        adapter=adapter,
-        governance=governance,
-        scope=scope,
-    )
+    try:
+        result: SkillResult = analyze_objective(
+            objective,
+            connection=None,
+            source_model=model,
+            planning_model_fn=planning_fn,
+            interpretation_model_fn=interpretation_fn,
+            connection_handle=version,
+            adapter=adapter,
+            governance=governance,
+            scope=scope,
+        )
+    except Exception:
+        # A genuine model/execution failure (e.g. a provider error after
+        # retries) propagated from the seam. Surface a CLEAN, credential-free
+        # outcome — never a 500, never a stack trace / API key to the browser,
+        # and never a fabricated empty plan. (Validation/Sentinel blocks are
+        # NOT exceptions — they come back as SkillResult.status below.)
+        return {"error": "QUERY_FAILED"}
     return {"result": serialize_skill_result(result)}
