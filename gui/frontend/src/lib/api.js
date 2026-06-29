@@ -565,10 +565,29 @@ export async function fetchSourceModelCandidates() {
   return asJsonOrThrow(r)
 }
 
-export async function approveSourceModelCandidate(candidateId) {
+// Approve a candidate. Pass `connection` (host/port/user/password/database/
+// display_name) so the backend writes the encrypted connection profile that
+// makes the ratified source queryable. Field names match the backend's
+// ApproveCandidateRequest exactly. Password is sent only on this admin+CSRF call.
+export async function approveSourceModelCandidate(candidateId, connection) {
   const r = await fetch(
     `${API_BASE}/admin/source-model-candidates/${encodeURIComponent(candidateId)}/approve`,
-    { method: 'POST', headers: csrfHeaders(), credentials: 'include' },
+    {
+      method: 'POST',
+      headers: csrfHeaders({ 'Content-Type': 'application/json' }),
+      credentials: 'include',
+      body: JSON.stringify(connection || {}),
+    },
+  )
+  return asJsonOrThrow(r)
+}
+
+// Admin: remove the stored connection (encrypted credential) for a ratified
+// source, keyed by version. Does NOT delete the ratified record (history kept).
+export async function removeSourceConnection(version) {
+  const r = await fetch(
+    `${API_BASE}/admin/data-sources/${encodeURIComponent(version)}/connection`,
+    { method: 'DELETE', headers: csrfHeaders(), credentials: 'include' },
   )
   return asJsonOrThrow(r)
 }

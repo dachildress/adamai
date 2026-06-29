@@ -31,8 +31,11 @@ export function QueryDataSourceModal({ onClose }) {
     (async () => {
       try {
         const m = await fetchQuerySourceModels()
-        setModels(m.source_models || [])
-        if (m.source_models?.length) setVersion(m.source_models[0].version)
+        const list = m.source_models || []
+        setModels(list)
+        // Only default to a source that can actually answer (has a connection).
+        const firstQueryable = list.find(s => s.has_connection)
+        if (firstQueryable) setVersion(firstQueryable.version)
       } catch (e) { setError(e.message || String(e)) }
     })()
   }, [])
@@ -78,8 +81,9 @@ export function QueryDataSourceModal({ onClose }) {
                       onChange={e => setVersion(e.target.value)}>
                 {models.length === 0 && <option value="">No approved sources</option>}
                 {models.map(m => (
-                  <option key={m.version} value={m.version}>
+                  <option key={m.version} value={m.version} disabled={!m.has_connection}>
                     {m.source_name} · {m.version} · approved {m.approved_at}
+                    {m.has_connection ? '' : ' (no connection)'}
                   </option>
                 ))}
               </select>

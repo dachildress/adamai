@@ -2839,6 +2839,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         admin: Dict[str, Any] = Depends(require_admin),
     ) -> Dict[str, Any]:
         store = data_sources.get_pipeline_ingestion_store()
+        conn_store = data_source_connections.get_connection_store()
         return {"source_models": [
             {
                 "version": r.version,
@@ -2846,9 +2847,25 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
                 "entity_count": len(r.entities),
                 "approved_by": r.approved_by,
                 "approved_at": r.approved_at,
+                # Read-only presence check (no decrypt) so the admin UI can mark
+                # sources with no stored connection / offer "Remove connection".
+                "has_connection": conn_store.has(r.version),
             }
             for r in store.list_ratified()
         ]}
+
+    @app.delete("/api/admin/data-sources/{version}/connection")
+    def delete_source_connection(
+        version: str,
+        admin: Dict[str, Any] = Depends(require_admin),
+        _csrf: Dict[str, Any] = Depends(require_csrf),
+    ) -> Dict[str, Any]:
+        """Remove the stored connection profile (encrypted credential) for a
+        ratified source, keyed by its version. The immutable ratified record /
+        source model is left untouched — governance history is preserved. Returns
+        {removed: true|false}; never any credential data."""
+        removed = data_source_connections.delete_connection_profile(version)
+        return {"removed": removed}
 
     @app.post("/api/data-intelligence/query")
     def data_intelligence_query(
