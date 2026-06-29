@@ -326,6 +326,44 @@ def resolve_director(adam_root: Path) -> Dict[str, str]:
     }
 
 
+def export_provider_keys_from_dotenv(adam_root: Path) -> None:
+    """Export ONLY the provider api_key_env names declared in providers.json
+    from .env into os.environ, so .env is the single source of truth for model
+    keys and they need not be duplicated in the systemd unit.
+
+    Existing env wins: a non-empty os.environ value is never overwritten (same
+    precedence as adam/core/session.py:load_dotenv). Limited to the api_key_env
+    names (never a bulk .env dump, to avoid leaking unrelated entries). Never
+    logs a key value — only the name and whether it was set-from-dotenv vs
+    already-present. Reuses the existing minimal load_dotenv (no new dependency).
+    """
+    try:
+        env_values = load_dotenv(adam_root / ".env")
+    except Exception:
+        return
+    if not env_values:
+        return
+    try:
+        with open(adam_root / "config" / "providers.json", encoding="utf-8") as f:
+            providers = json.load(f)
+    except (OSError, ValueError):
+        return
+
+    key_names = sorted({
+        p["api_key_env"] for p in providers.values()
+        if isinstance(p, dict) and p.get("api_key_env")
+    })
+    for name in key_names:
+        if os.environ.get(name, "").strip():
+            print(f"provider key {name}: already present in environment (not overridden)",
+                  file=sys.stderr)
+            continue
+        value = (env_values.get(name) or "").strip()
+        if value:
+            os.environ[name] = value
+            print(f"provider key {name}: set from .env", file=sys.stderr)
+
+
 # ============================================================
 # Session discovery
 # ============================================================
@@ -1348,6 +1386,14 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
 
     # v5: locate gui/ relative to adam_root. users.json lives there.
     gui_root = adam_root / "gui"
+
+    # Make .env the single source of truth for provider model keys: export the
+    # api_key_env names from providers.json into os.environ (existing env wins)
+    # so the in-process model seam (client_dispatch.call_model) can resolve them
+    # without the key being duplicated in the systemd unit. Done early, before
+    # any model-seam provider runs.
+    export_provider_keys_from_dotenv(adam_root)
+
     auth.init_auth(gui_root)
     governance.init_governance(gui_root)   # Slice 1: data model only
     csrf.init_csrf(gui_root)               # Pass 1 hardening: CSRF signing secret
