@@ -107,7 +107,11 @@ class QueryBody:
             joins=tuple(Join(**j) for j in (d.get("joins") or [])),
             group_by=tuple(d.get("group_by", []) or []),
             aggregations=tuple(
-                Aggregation(fn=a["fn"], field=a["field"], as_=a.get("as", a.get("as_")))
+                # Normalize the aggregation fn to lowercase at the parse boundary
+                # so the canonical/audited plan always carries a lowercase fn,
+                # regardless of how the model cased it (COUNT/Count/count). This
+                # does NOT widen the allowed set — validation still gates the name.
+                Aggregation(fn=str(a["fn"]).lower(), field=a["field"], as_=a.get("as", a.get("as_")))
                 for a in (d.get("aggregations") or [])
             ),
             order_by=tuple(Order(**o) for o in (d.get("order_by") or [])),

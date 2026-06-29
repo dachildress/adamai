@@ -191,6 +191,33 @@ def test_connection_handle_not_falsely_rejected():
         check(f"connection_handle not falsely rejected: {handle}", out.ok, str(out))
 
 
+def test_aggregation_fn_case_insensitive():
+    # The model may emit standard-SQL uppercase agg names; these must validate
+    # and be normalized to lowercase in the canonical plan. The allowed set is
+    # unchanged — a genuinely unknown fn still fails.
+    for cased in ("COUNT", "Count", "count", "AVG", "Sum"):
+        d = base_plan_dict()
+        d["body"]["aggregations"] = [{"fn": cased, "field": "attendance.rate", "as": "avg_rate"}]
+        plan = ExecutionPlan.from_dict(d)
+        check(f"agg fn {cased!r} normalized to lowercase in canonical plan",
+              plan.body.aggregations[0].fn == cased.lower(), plan.body.aggregations[0].fn)
+        out = validate(plan, SQLITE_CAPABILITIES, ValidationConfig())
+        check(f"agg fn {cased!r} validates", out.ok, f"{out.category}: {out.detail}")
+
+
+def test_unknown_aggregation_fn_still_rejected():
+    d = base_plan_dict()
+    d["body"]["aggregations"] = [{"fn": "median", "field": "attendance.rate", "as": "avg_rate"}]
+    out = v(d)
+    check("genuinely unknown agg fn still rejected",
+          not out.ok and out.category == VALIDATION_ERROR, str(out))
+    # case variant of an unknown fn is also rejected (set not widened)
+    d["body"]["aggregations"] = [{"fn": "MEDIAN", "field": "attendance.rate", "as": "avg_rate"}]
+    out2 = v(d)
+    check("unknown agg fn rejected regardless of case",
+          not out2.ok and out2.category == VALIDATION_ERROR, str(out2))
+
+
 def main():
     print("Phase 2: validation + credential detection")
     print("=" * 60)
@@ -211,6 +238,8 @@ def main():
         test_join_capability,
         test_credential_detection,
         test_connection_handle_not_falsely_rejected,
+        test_aggregation_fn_case_insensitive,
+        test_unknown_aggregation_fn_still_rejected,
     ]:
         print(f"\n{t.__name__}:")
         t()

@@ -263,7 +263,11 @@ def validate(
         if j.type not in JOIN_TYPES:
             return _err(VALIDATION_ERROR, f"unknown join type: {j.type!r}")
     for a in body.aggregations:
-        if a.fn not in AGG_FNS:
+        # Case-insensitive backstop: the canonical plan is already lowercased at
+        # parse time, but compare lowercased so a directly-constructed plan with
+        # an uppercase fn (e.g. "COUNT") is still accepted. The allowed SET is
+        # unchanged — only case variants of the existing five are tolerated.
+        if a.fn.lower() not in AGG_FNS:
             return _err(VALIDATION_ERROR, f"unknown aggregation fn: {a.fn!r}")
     for o in body.order_by:
         if o.direction not in ORDER_DIRECTIONS:
