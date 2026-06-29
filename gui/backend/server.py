@@ -2776,8 +2776,23 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         write an encrypted connection profile so the source is queryable; the
         plaintext password is used once to encrypt and never persisted. Terminal:
         re-approving returns a clean 409 (never a 500)."""
+        # Backend defense-in-depth: distinguish "no connection intent" (legit
+        # schema-only approve, attach a connection later) from "partial/blank
+        # connection intent" (a botched attach). All four of host/database/user/
+        # password are required TOGETHER; a partial set is a 400 and must NOT
+        # ratify a connectionless source as a side effect. A fully-absent body is
+        # allowed (ratify only). The password never appears in any error.
+        def _nonblank(s: Optional[str]) -> bool:
+            return bool((s or "").strip())
+        _conn_fields = [body.host, body.database, body.user, body.password] if body else []
+        conn_intent = any(_nonblank(f) for f in _conn_fields)
+        conn_complete = bool(body) and all(_nonblank(f) for f in _conn_fields)
+        if conn_intent and not conn_complete:
+            raise HTTPException(
+                status_code=400,
+                detail="incomplete connection details: host, database, user, and password are all required to attach a connection")
         # Connection profile is written only when all required fields are present.
-        has_conn = bool(body and body.host and body.database and body.user and body.password)
+        has_conn = conn_complete
         if has_conn and not data_source_connections.encryption_available():
             # Fail BEFORE ratifying so we never mint an unqueryable version due
             # to a missing key. Clean message; never the password.

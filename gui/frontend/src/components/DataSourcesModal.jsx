@@ -32,10 +32,17 @@ export function DataSourcesModal({ onClose }) {
   const [candidate, setCandidate] = useState(null)     // pending candidate under review
   const [candidates, setCandidates] = useState([])
   const [models, setModels] = useState([])
-  const [busy, setBusy] = useState('')                 // '' | 'test' | 'introspect' | 'approve' | 'reject'
+  const [busy, setBusy] = useState('')                 // '' | 'test' | 'introspect' | 'approve' | 'reject' | 'remove-connection'
   const [error, setError] = useState(null)
+  // Approve binds connection entry to a SPECIFIC candidate. approveTarget is the
+  // candidate being approved; approveDraft holds its connection fields (pre-filled
+  // from the form when available, re-entered after a reload). This guarantees the
+  // connection is tied to the right candidate and never sent blank.
+  const [approveTarget, setApproveTarget] = useState(null)
+  const [approveDraft, setApproveDraft] = useState(EMPTY_FORM)
 
   function set(k, v) { setForm(f => ({ ...f, [k]: v })); setError(null) }
+  function setDraft(k, v) { setApproveDraft(d => ({ ...d, [k]: v })); setError(null) }
 
   const refresh = useCallback(async () => {
     try {
@@ -73,19 +80,50 @@ export function DataSourcesModal({ onClose }) {
     finally { setBusy('') }
   }
 
-  async function handleApprove(id) {
+  // Open the approve panel for a specific candidate, pre-filling the connection
+  // draft from the form when it's populated (same-session flow) and leaving it
+  // empty otherwise (post-reload) so the admin re-enters details for THIS source.
+  function openApprove(cand) {
+    setApproveTarget(cand)
+    setApproveDraft({
+      host: form.host, port: form.port, user: form.user,
+      password: form.password, database: form.database,
+      source_name: form.source_name?.trim() || cand.source_name || '',
+    })
+    setError(null)
+  }
+
+  function cancelApprove() { setApproveTarget(null); setApproveDraft(EMPTY_FORM); setError(null) }
+
+  const draftReady = !!(
+    approveDraft.host?.trim() && approveDraft.database?.trim() &&
+    approveDraft.user?.trim() && approveDraft.password?.trim()
+  )
+
+  // withConnection=true: send the connection fields (all four required — never
+  // blanks). withConnection=false: explicit schema-only approve (attach later).
+  async function submitApprove(withConnection) {
+    const target = approveTarget
+    if (!target) return
+    if (withConnection && !draftReady) {
+      setError('Enter the read-only connection details (host, database, user, password) for this source before approving.')
+      return
+    }
+    if (!withConnection && !window.confirm(
+      'Approve WITHOUT a connection?\n\nThe schema is ratified but the source ' +
+      "won't be queryable until you attach a connection later (re-onboard).")) return
+    const conn = withConnection ? {
+      host: approveDraft.host.trim(),
+      port: Number(approveDraft.port) || 3306,
+      user: approveDraft.user.trim(),
+      password: approveDraft.password,
+      database: approveDraft.database.trim(),
+      display_name: approveDraft.source_name?.trim() || undefined,
+    } : {}
     setBusy('approve'); setError(null)
     try {
-      // Send the connection fields so the backend writes the encrypted profile
-      // that makes the source queryable. Field names match the backend body.
-      await approveSourceModelCandidate(id, {
-        host: form.host,
-        port: Number(form.port) || 3306,
-        user: form.user,
-        password: form.password,
-        database: form.database,
-        display_name: form.source_name?.trim() || undefined,
-      })
+      await approveSourceModelCandidate(target.candidate_id, conn)
+      setApproveTarget(null); setApproveDraft(EMPTY_FORM)
       setCandidate(null)
       await refresh()
     } catch (e) { setError(e.message || String(e)) }
@@ -224,8 +262,50 @@ export function DataSourcesModal({ onClose }) {
                   {busy === 'reject' ? 'Rejecting…' : 'Reject'}
                 </button>
                 <button type="button" className="btn btn--primary btn--small"
-                        onClick={() => handleApprove(candidate.candidate_id)} disabled={!!busy}>
-                  {busy === 'approve' ? 'Approving…' : 'Approve'}
+                        onClick={() => openApprove(candidate)} disabled={!!busy}>
+                  Approve…
+                </button>
+              </div>
+            </div>
+          )}
+
+          {approveTarget && (
+            <div className="gov-admin__card gov-admin__card--edit">
+              <div className="gov-admin__card-header">
+                <span className="gov-admin__card-title">Approve — {approveTarget.source_name}</span>
+                <span className="gov-admin__card-id">connection</span>
+              </div>
+              <div className="gov-admin__temp-pw-note">
+                Enter the read-only connection for this source. It is encrypted at rest
+                and used only to answer queries. Approving without a connection ratifies
+                the schema but leaves the source unqueryable until you attach one later.
+              </div>
+              <div className="gov-admin__form-grid">
+                <label className="gov-admin__field"><span className="gov-admin__field-label">Host</span>
+                  <input className="gov-admin__input" value={approveDraft.host} onChange={e => setDraft('host', e.target.value)} /></label>
+                <label className="gov-admin__field"><span className="gov-admin__field-label">Port</span>
+                  <input type="number" className="gov-admin__input" value={approveDraft.port} onChange={e => setDraft('port', e.target.value)} /></label>
+                <label className="gov-admin__field"><span className="gov-admin__field-label">User</span>
+                  <input className="gov-admin__input" value={approveDraft.user} onChange={e => setDraft('user', e.target.value)} /></label>
+                <label className="gov-admin__field"><span className="gov-admin__field-label">Password</span>
+                  <input type="password" className="gov-admin__input" value={approveDraft.password}
+                         autoComplete="off" onChange={e => setDraft('password', e.target.value)} /></label>
+                <label className="gov-admin__field"><span className="gov-admin__field-label">Database</span>
+                  <input className="gov-admin__input" value={approveDraft.database} onChange={e => setDraft('database', e.target.value)} /></label>
+                <label className="gov-admin__field"><span className="gov-admin__field-label">Display name</span>
+                  <input className="gov-admin__input" value={approveDraft.source_name} onChange={e => setDraft('source_name', e.target.value)} /></label>
+              </div>
+              <div className="gov-admin__form-actions">
+                <button type="button" className="btn btn--ghost btn--small" onClick={cancelApprove} disabled={!!busy}>
+                  Cancel
+                </button>
+                <button type="button" className="btn btn--ghost btn--small" onClick={() => submitApprove(false)} disabled={!!busy}>
+                  {busy === 'approve' ? 'Working…' : 'Approve without connection'}
+                </button>
+                <button type="button" className="btn btn--primary btn--small" onClick={() => submitApprove(true)}
+                        disabled={!!busy || !draftReady}
+                        title={draftReady ? '' : 'Enter host, database, user and password to approve with a connection'}>
+                  {busy === 'approve' ? 'Approving…' : 'Approve with connection'}
                 </button>
               </div>
             </div>
@@ -250,7 +330,7 @@ export function DataSourcesModal({ onClose }) {
                             <button className="btn btn--ghost btn--small"
                                     onClick={() => setCandidate(cd)} disabled={!!busy}>Review</button>
                             <button className="btn btn--primary btn--small"
-                                    onClick={() => handleApprove(cd.candidate_id)} disabled={!!busy}>Approve</button>
+                                    onClick={() => openApprove(cd)} disabled={!!busy}>Approve…</button>
                             <button className="btn btn--danger btn--small"
                                     onClick={() => handleReject(cd.candidate_id)} disabled={!!busy}>Reject</button>
                           </div>

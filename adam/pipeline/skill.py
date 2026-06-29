@@ -115,6 +115,9 @@ def build_system_prompt(source_model: SourceModel) -> str:
     lines.append("  - operation MUST be 'select'.")
     lines.append("  - Reference ONLY the entities and fields listed above; do not invent any.")
     lines.append("  - 'limit' is REQUIRED (a positive integer). Never project ['*'].")
+    lines.append(
+        "  - Aggregation 'fn' MUST be one of (lowercase): count, sum, avg, min, max."
+    )
     lines.append("  - Output ONLY the JSON body. No prose, no markdown, no SQL.")
     lines.append(
         "  - Do NOT include any envelope fields. Specifically, do NOT emit "

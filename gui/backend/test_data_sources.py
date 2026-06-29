@@ -643,6 +643,48 @@ def test_has_connection_flag_safe():
               "password" not in text and "username" not in text and "encrypted" not in text)
 
 
+def test_approve_partial_connection_rejected_not_ratified():
+    from fastapi.testclient import TestClient
+    key = Fernet.generate_key().decode()
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        # host+user present but password/database blank -> partial intent.
+        cand = _introspect(app, c, cook, hdr)
+        with env(ADAM_DATA_SOURCE_ENCRYPTION_KEY=key):
+            r = c.post(f"/api/admin/source-model-candidates/{cand['candidate_id']}/approve",
+                       cookies=cook, headers=hdr,
+                       json={"host": "db.example", "user": "ro", "password": "", "database": ""})
+        check("partial connection -> 400 clean", r.status_code == 400, f"got {r.status_code}: {r.text[:160]}")
+        check("partial connection error mentions incomplete connection",
+              "incomplete connection" in r.text, r.text[:160])
+        # Side effect must NOT have ratified a connectionless source.
+        models = c.get("/api/admin/source-models", cookies=cook, headers=hdr).json()["source_models"]
+        check("partial-connection approve did NOT ratify", models == [], str(models))
+        # whitespace-only is also blank -> still partial -> 400
+        with env(ADAM_DATA_SOURCE_ENCRYPTION_KEY=key):
+            r2 = c.post(f"/api/admin/source-model-candidates/{cand['candidate_id']}/approve",
+                        cookies=cook, headers=hdr,
+                        json={"host": "db.example", "user": "ro", "password": "  ", "database": "inv"})
+        check("whitespace-only field treated as blank -> 400", r2.status_code == 400, f"got {r2.status_code}")
+
+
+def test_approve_no_connection_fields_ratifies_connectionless():
+    from fastapi.testclient import TestClient
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        cand = _introspect(app, c, cook, hdr)
+        # Fully-absent connection body: the legitimate attach-later path.
+        r = c.post(f"/api/admin/source-model-candidates/{cand['candidate_id']}/approve",
+                   cookies=cook, headers=hdr, json={})
+        check("no-connection approve -> 200 (attach later allowed)", r.status_code == 200, r.text[:160])
+        version = r.json()["version"]
+        models = {m["version"]: m for m in
+                  c.get("/api/admin/source-models", cookies=cook, headers=hdr).json()["source_models"]}
+        check("ratified connectionless source has_connection False", models[version]["has_connection"] is False)
+
+
 def test_admin_source_models_has_connection_flag():
     from fastapi.testclient import TestClient
     key = Fernet.generate_key().decode()
@@ -726,6 +768,8 @@ def main():
         test_query_no_profile_connection_not_configured,
         test_query_missing_key_resolution_failed,
         test_has_connection_flag_safe,
+        test_approve_partial_connection_rejected_not_ratified,
+        test_approve_no_connection_fields_ratifies_connectionless,
         test_admin_source_models_has_connection_flag,
         test_delete_connection_revokes_credential_keeps_record,
     ]:
