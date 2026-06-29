@@ -425,6 +425,38 @@ def test_model_error_surfaces_clean_not_500():
         check("no fabricated result on model error", r.json().get("result") is None)
 
 
+def _write_providers_json(adam_root: Path):
+    (adam_root / "config").mkdir(parents=True, exist_ok=True)
+    (adam_root / "config" / "providers.json").write_text(
+        json.dumps({"anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
+                    "openai": {"api_key_env": "OPENAI_API_KEY"}}),
+        encoding="utf-8")
+
+
+def test_dotenv_exports_provider_key_when_absent():
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw)
+        (tmp / ".env").write_text("ANTHROPIC_API_KEY=xyz\nUNRELATED=nope\n", encoding="utf-8")
+        _write_providers_json(tmp)
+        with env(ANTHROPIC_API_KEY=None, UNRELATED=None):
+            make_app(tmp)  # build_app exports keys from .env
+            check("provider key set from .env when absent in os.environ",
+                  os.environ.get("ANTHROPIC_API_KEY") == "xyz")
+            check("unrelated .env entries are NOT exported",
+                  os.environ.get("UNRELATED") is None)
+
+
+def test_dotenv_does_not_override_existing_env():
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw)
+        (tmp / ".env").write_text("ANTHROPIC_API_KEY=from-dotenv\n", encoding="utf-8")
+        _write_providers_json(tmp)
+        with env(ANTHROPIC_API_KEY="from-real-env"):
+            make_app(tmp)
+            check("existing os.environ value wins (not overwritten)",
+                  os.environ.get("ANTHROPIC_API_KEY") == "from-real-env")
+
+
 def main():
     print("Data Sources web integration tests")
     print("=" * 60)
@@ -444,6 +476,8 @@ def main():
         test_single_provider_usability_no_trap,
         test_planning_fn_calls_call_model_unchanged,
         test_model_error_surfaces_clean_not_500,
+        test_dotenv_exports_provider_key_when_absent,
+        test_dotenv_does_not_override_existing_env,
     ]:
         print(f"\n{t.__name__}:")
         t()
