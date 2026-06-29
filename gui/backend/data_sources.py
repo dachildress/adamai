@@ -45,6 +45,12 @@ from adam.pipeline import (  # noqa: E402
     make_pymysql_connect_fn,
 )
 
+# Sibling backend module (importable as a package member or directly).
+try:
+    from . import data_source_connections as connstore  # noqa: E402
+except ImportError:  # pragma: no cover - direct-run fallback
+    import data_source_connections as connstore  # noqa: E402
+
 # Coarse connection-test states (never raw driver diagnostics).
 OK = "ok"
 CONNECTION_FAILED = "connection_failed"
@@ -54,6 +60,7 @@ NO_TABLES_FOUND = "no_tables_found"
 # Query-path outcome codes (config states, not 500s).
 MODEL_NOT_CONFIGURED = "MODEL_NOT_CONFIGURED"
 CONNECTION_NOT_CONFIGURED = "CONNECTION_NOT_CONFIGURED"
+CONNECTION_RESOLUTION_FAILED = "CONNECTION_RESOLUTION_FAILED"   # key missing / decrypt failed
 
 # MySQL access-denied error codes — classify auth vs. unreachable WITHOUT
 # importing the driver or surfacing its message.
@@ -276,11 +283,26 @@ def default_model_fns_provider() -> Optional[ModelFns]:
 
 
 def default_resolve_connection(handle: str) -> Optional[Callable[[], Any]]:
-    """Resolve a named read-only connection handle to a connect_fn. Secret
-    storage is not built yet, so this returns None (live query →
-    CONNECTION_NOT_CONFIGURED). Tests inject a fake connect_fn via app.state.
-    The user query path NEVER accepts credentials — they resolve here."""
-    return None
+    """Resolve a ratified version (the query handle) to a read-only connect_fn.
+
+    Loads the stored connection profile, decrypts its password in memory with
+    Fernet, and returns a make_pymysql_connect_fn closure (plaintext lives only
+    in that closure, for the query's duration).
+
+    Returns None when NO profile exists (→ CONNECTION_NOT_CONFIGURED). RAISES
+    on a key/decrypt failure (missing key, tampered/corrupt token) so the
+    caller surfaces a clean CONNECTION_RESOLUTION_FAILED rather than masking it
+    as 'not configured'. The user never supplied credentials — they resolve
+    here. make_pymysql_connect_fn is looked up at call time so tests can patch
+    it to avoid a live DB."""
+    profile = connstore.get_connection_store().get(handle)
+    if profile is None:
+        return None
+    password = connstore.decrypt_password(profile.encrypted_password)  # may raise (key/decrypt)
+    return make_pymysql_connect_fn(
+        host=profile.host, port=profile.port, user=profile.username,
+        password=password, database=profile.database,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +351,12 @@ def run_governed_query(
         return {"error": MODEL_NOT_CONFIGURED}
     planning_fn, interpretation_fn = model_fns
 
-    connect_fn = resolve_connection(version)   # handle == ratified version for now
+    try:
+        connect_fn = resolve_connection(version)   # handle == ratified version
+    except Exception:
+        # Key missing/invalid or token tampered/corrupt — clean, no plaintext,
+        # no stack trace to the browser.
+        return {"error": CONNECTION_RESOLUTION_FAILED}
     if connect_fn is None:
         return {"error": CONNECTION_NOT_CONFIGURED}
 

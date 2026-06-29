@@ -457,6 +457,189 @@ def test_dotenv_does_not_override_existing_env():
                   os.environ.get("ANTHROPIC_API_KEY") == "from-real-env")
 
 
+def test_dotenv_exports_encryption_key():
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw)
+        (tmp / ".env").write_text("ADAM_DATA_SOURCE_ENCRYPTION_KEY=k-from-dotenv\n", encoding="utf-8")
+        _write_providers_json(tmp)
+        with env(ADAM_DATA_SOURCE_ENCRYPTION_KEY=None):
+            make_app(tmp)
+            check("encryption key exported from .env (single secret source)",
+                  os.environ.get("ADAM_DATA_SOURCE_ENCRYPTION_KEY") == "k-from-dotenv")
+
+
+# ---- Connection seam (encrypted profiles) ----
+
+from cryptography.fernet import Fernet  # noqa: E402
+
+DB_PW = "db-r3ad0nly-pass!"
+
+
+def _introspect(app, c, cook, hdr, source_name="inventory"):
+    set_connect_factory(app, FakeConn(col_rows=WIDGET_COLS))
+    return c.post("/api/admin/data-sources/mysql/introspect", cookies=cook, headers=hdr,
+                  json={"host": "h", "user": "u", "password": "x", "database": "inv",
+                        "source_name": source_name}).json()
+
+
+def _approve_with_conn(app, c, cook, hdr, key, source_name="inventory"):
+    cand = _introspect(app, c, cook, hdr, source_name)
+    with env(ADAM_DATA_SOURCE_ENCRYPTION_KEY=key):
+        r = c.post(f"/api/admin/source-model-candidates/{cand['candidate_id']}/approve",
+                   cookies=cook, headers=hdr,
+                   json={"host": "db.example", "port": 3306, "user": "ro",
+                         "password": DB_PW, "database": "inv", "display_name": "Inventory"})
+    return r
+
+
+def test_approve_writes_encrypted_profile():
+    from fastapi.testclient import TestClient
+    key = Fernet.generate_key().decode()
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        r = _approve_with_conn(app, c, cook, hdr, key)
+        check("approve-with-connection -> 200", r.status_code == 200, r.text[:160])
+        check("approve response carries NO password", DB_PW not in r.text)
+        check("approve response carries no encrypted_password", "encrypted_password" not in r.text)
+        conn_path = tmp / "pipeline_data" / "source_connections.json"
+        on_disk = conn_path.read_text(encoding="utf-8")
+        check("plaintext password NOT in connection store on disk", DB_PW not in on_disk)
+        check("on-disk profile has an encrypted_password token", "encrypted_password" in on_disk)
+
+
+def test_approve_with_conn_missing_key_is_clean_and_not_ratified():
+    from fastapi.testclient import TestClient
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        cand = _introspect(app, c, cook, hdr)
+        with env(ADAM_DATA_SOURCE_ENCRYPTION_KEY=None):
+            r = c.post(f"/api/admin/source-model-candidates/{cand['candidate_id']}/approve",
+                       cookies=cook, headers=hdr,
+                       json={"host": "h", "user": "ro", "password": DB_PW, "database": "inv"})
+        check("approve-with-conn, no key -> 400 clean", r.status_code == 400, f"got {r.status_code}")
+        check("error mentions encryption key, not password", "encryption key" in r.text and DB_PW not in r.text)
+        # Not ratified: fail BEFORE minting a version.
+        models = c.get("/api/admin/source-models", cookies=cook, headers=hdr).json()["source_models"]
+        check("candidate NOT ratified when key missing", models == [])
+
+
+def test_resolve_connection_decrypts():
+    from fastapi.testclient import TestClient
+    from backend import data_sources as ds
+    key = Fernet.generate_key().decode()
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        version = _approve_with_conn(app, c, cook, hdr, key).json()["version"]
+        captured = {}
+
+        def fake_factory(**kw):
+            captured.update(kw)
+            return lambda: "CONN_SENTINEL"
+
+        orig = ds.make_pymysql_connect_fn
+        ds.make_pymysql_connect_fn = fake_factory
+        try:
+            with env(ADAM_DATA_SOURCE_ENCRYPTION_KEY=key):
+                connect_fn = ds.default_resolve_connection(version)
+            check("resolve returns a connect_fn", callable(connect_fn))
+            check("connect_fn builds the connection", connect_fn() == "CONN_SENTINEL")
+            check("password decrypted and passed to factory", captured.get("password") == DB_PW)
+            check("host/user/database resolved from profile",
+                  captured.get("host") == "db.example" and captured.get("user") == "ro"
+                  and captured.get("database") == "inv")
+        finally:
+            ds.make_pymysql_connect_fn = orig
+
+
+def test_query_e2e_real_resolve():
+    from fastapi.testclient import TestClient
+    from backend import data_sources as ds
+    key = Fernet.generate_key().decode()
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        version = _approve_with_conn(app, c, cook, hdr, key).json()["version"]
+        # Real resolve_connection (NOT overridden); patch the factory so the
+        # decrypted connect_fn yields a fake DB conn — fully offline.
+        qconn = FakeConn(query_rows=[("Widget A",)],
+                         query_desc=[("name", None, None, None, None, None, None)], row_total=1)
+        plan_body = json.dumps({"operation": "select", "entities": ["widgets"],
+                                "projection": ["widgets.name"], "limit": 10})
+        interp = json.dumps({"inferences": ["i"], "recommendations": ["r"],
+                             "assumptions": ["a"], "limitations": ["l"],
+                             "confidence": "low", "confidence_rationale": "x"})
+        app.state.pipeline_model_fns_provider = lambda: (
+            (lambda s, o: plan_body), (lambda s, p: interp))
+        orig = ds.make_pymysql_connect_fn
+        ds.make_pymysql_connect_fn = lambda **kw: (lambda: qconn)
+        try:
+            ucook, uhdr = ctx("pilot")
+            with env(ADAM_DATA_SOURCE_ENCRYPTION_KEY=key):
+                r = c.post("/api/data-intelligence/query", cookies=ucook, headers=uhdr,
+                           json={"version": version, "objective": "what widgets?"})
+        finally:
+            ds.make_pymysql_connect_fn = orig
+        check("e2e real-resolve query -> 200", r.status_code == 200, r.text[:200])
+        res = r.json().get("result")
+        check("returns SkillResult ok", res and res["status"] == "ok", str(r.json())[:160])
+        check("no password leaked in query response", DB_PW not in r.text)
+
+
+def test_query_no_profile_connection_not_configured():
+    from fastapi.testclient import TestClient
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        version = _ratify_widgets(app, c, cook, hdr)  # approve with NO connection body
+        app.state.pipeline_model_fns_provider = lambda: ((lambda s, o: "{}"), (lambda s, p: "{}"))
+        # real resolve_connection (not overridden) -> no profile -> None
+        ucook, uhdr = ctx("pilot")
+        r = c.post("/api/data-intelligence/query", cookies=ucook, headers=uhdr,
+                   json={"version": version, "objective": "x"})
+        check("no profile -> CONNECTION_NOT_CONFIGURED (200)",
+              r.status_code == 200 and r.json().get("error") == "CONNECTION_NOT_CONFIGURED", str(r.json()))
+
+
+def test_query_missing_key_resolution_failed():
+    from fastapi.testclient import TestClient
+    key = Fernet.generate_key().decode()
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        version = _approve_with_conn(app, c, cook, hdr, key).json()["version"]
+        app.state.pipeline_model_fns_provider = lambda: ((lambda s, o: "{}"), (lambda s, p: "{}"))
+        ucook, uhdr = ctx("pilot")
+        # Key UNSET at query time -> decrypt fails -> clean CONNECTION_RESOLUTION_FAILED, not 500.
+        with env(ADAM_DATA_SOURCE_ENCRYPTION_KEY=None):
+            r = c.post("/api/data-intelligence/query", cookies=ucook, headers=uhdr,
+                       json={"version": version, "objective": "x"})
+        check("missing key at query -> 200 (not 500)", r.status_code == 200, f"got {r.status_code}")
+        check("missing key -> CONNECTION_RESOLUTION_FAILED",
+              r.json().get("error") == "CONNECTION_RESOLUTION_FAILED", str(r.json()))
+
+
+def test_has_connection_flag_safe():
+    from fastapi.testclient import TestClient
+    key = Fernet.generate_key().decode()
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        v_conn = _approve_with_conn(app, c, cook, hdr, key, source_name="withconn").json()["version"]
+        v_noconn = _ratify_widgets(app, c, cook, hdr)   # source "inventory", no profile
+        ucook, uhdr = ctx("pilot")
+        models = c.get("/api/data-intelligence/source-models", cookies=ucook, headers=uhdr).json()["source_models"]
+        by_v = {m["version"]: m for m in models}
+        check("source with profile -> has_connection True", by_v[v_conn]["has_connection"] is True)
+        check("source without profile -> has_connection False", by_v[v_noconn]["has_connection"] is False)
+        # No credentials in the browser-facing list.
+        text = json.dumps(models)
+        check("picker exposes no username/password fields",
+              "password" not in text and "username" not in text and "encrypted" not in text)
+
+
 def main():
     print("Data Sources web integration tests")
     print("=" * 60)
@@ -478,6 +661,14 @@ def main():
         test_model_error_surfaces_clean_not_500,
         test_dotenv_exports_provider_key_when_absent,
         test_dotenv_does_not_override_existing_env,
+        test_dotenv_exports_encryption_key,
+        test_approve_writes_encrypted_profile,
+        test_approve_with_conn_missing_key_is_clean_and_not_ratified,
+        test_resolve_connection_decrypts,
+        test_query_e2e_real_resolve,
+        test_query_no_profile_connection_not_configured,
+        test_query_missing_key_resolution_failed,
+        test_has_connection_flag_safe,
     ]:
         print(f"\n{t.__name__}:")
         t()
