@@ -64,3 +64,8 @@ python-multipart==0.0.32
 # later is a small change; the verify_password() interface is
 # already library-agnostic from the call sites.
 bcrypt==5.0.0
+
+# Fernet symmetric encryption for data-source connection passwords at rest
+# (gui/backend/data_source_connections.py). One per-deployment key in
+# ADAM_DATA_SOURCE_ENCRYPTION_KEY; no hand-rolled crypto.
+cryptography==49.0.0

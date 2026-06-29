@@ -51,6 +51,7 @@ try:
     from . import auth  # when imported as backend.server
     from . import csrf
     from . import data_sources
+    from . import data_source_connections
     from . import governance
     from . import ratelimit
     from . import verification
@@ -58,6 +59,7 @@ except ImportError:
     import auth          # when run directly
     import csrf
     import data_sources
+    import data_source_connections
     import governance
     import ratelimit
     import verification
@@ -280,6 +282,19 @@ class MySQLIntrospectRequest(MySQLTestRequest):
     source_name: str = Field(..., min_length=1, max_length=128)
 
 
+# Admin approve body — OPTIONAL connection details. When present (admin+CSRF
+# only), the password is encrypted at rest into a connection profile at ratify
+# time and then discarded. Approve still works with no body (ratify only). The
+# password is accepted here ONLY on this admin-protected route — never at query.
+class ApproveCandidateRequest(BaseModel):
+    host:         Optional[str] = Field(None, max_length=255)
+    port:         int = 3306
+    user:         Optional[str] = Field(None, max_length=128)
+    password:     Optional[str] = Field(None, max_length=512)
+    database:     Optional[str] = Field(None, max_length=128)
+    display_name: Optional[str] = Field(None, max_length=255)
+
+
 # The USER query body — by firm requirement carries NO connection credentials
 # (no host/user/password/database/dsn). A source is identified by its ratified
 # version only; the read-only connection resolves server-side from the handle.
@@ -326,14 +341,15 @@ def resolve_director(adam_root: Path) -> Dict[str, str]:
     }
 
 
-def export_provider_keys_from_dotenv(adam_root: Path) -> None:
+def export_provider_keys_from_dotenv(adam_root: Path, extra_names=()) -> None:
     """Export ONLY the provider api_key_env names declared in providers.json
-    from .env into os.environ, so .env is the single source of truth for model
-    keys and they need not be duplicated in the systemd unit.
+    (plus any explicit `extra_names`, e.g. the data-source encryption key) from
+    .env into os.environ, so .env is the single source of truth for model keys
+    and they need not be duplicated in the systemd unit.
 
     Existing env wins: a non-empty os.environ value is never overwritten (same
-    precedence as adam/core/session.py:load_dotenv). Limited to the api_key_env
-    names (never a bulk .env dump, to avoid leaking unrelated entries). Never
+    precedence as adam/core/session.py:load_dotenv). Limited to a specific set
+    of names (never a bulk .env dump, to avoid leaking unrelated entries). Never
     logs a key value — only the name and whether it was set-from-dotenv vs
     already-present. Reuses the existing minimal load_dotenv (no new dependency).
     """
@@ -343,16 +359,18 @@ def export_provider_keys_from_dotenv(adam_root: Path) -> None:
         return
     if not env_values:
         return
+    provider_names = set()
     try:
         with open(adam_root / "config" / "providers.json", encoding="utf-8") as f:
             providers = json.load(f)
+        provider_names = {
+            p["api_key_env"] for p in providers.values()
+            if isinstance(p, dict) and p.get("api_key_env")
+        }
     except (OSError, ValueError):
-        return
+        provider_names = set()
 
-    key_names = sorted({
-        p["api_key_env"] for p in providers.values()
-        if isinstance(p, dict) and p.get("api_key_env")
-    })
+    key_names = sorted(provider_names | {n for n in extra_names if n})
     for name in key_names:
         if os.environ.get(name, "").strip():
             print(f"provider key {name}: already present in environment (not overridden)",
@@ -1391,8 +1409,10 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
     # api_key_env names from providers.json into os.environ (existing env wins)
     # so the in-process model seam (client_dispatch.call_model) can resolve them
     # without the key being duplicated in the systemd unit. Done early, before
-    # any model-seam provider runs.
-    export_provider_keys_from_dotenv(adam_root)
+    # any model-seam provider runs. Also exports the data-source connection
+    # encryption key, so .env is the single per-deployment secret source.
+    export_provider_keys_from_dotenv(
+        adam_root, extra_names=(data_source_connections.ENCRYPTION_KEY_ENV,))
 
     auth.init_auth(gui_root)
     governance.init_governance(gui_root)   # Slice 1: data model only
@@ -1411,6 +1431,7 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
     # MODEL_NOT_CONFIGURED / CONNECTION_NOT_CONFIGURED); tests override them on
     # app.state with fakes to exercise the full governed flow.
     data_sources.init_data_sources(adam_root)
+    data_source_connections.init_connection_store(adam_root)
     app.state.pipeline_model_fns_provider = data_sources.default_model_fns_provider
     app.state.resolve_connection = data_sources.default_resolve_connection
     # connect_factory(**kwargs) -> connect_fn for admin test/introspect. Real
@@ -2748,10 +2769,20 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         candidate_id: str,
         admin: Dict[str, Any] = Depends(require_admin),
         _csrf: Dict[str, Any] = Depends(require_csrf),
+        body: Optional[ApproveCandidateRequest] = None,
     ) -> Dict[str, Any]:
         """Approve -> ratify (mint immutable version), recording the admin's
-        username. Terminal: re-approving returns a clean 409 with the existing
-        ratified record (never a 500)."""
+        username. If connection details are supplied (admin+CSRF only), also
+        write an encrypted connection profile so the source is queryable; the
+        plaintext password is used once to encrypt and never persisted. Terminal:
+        re-approving returns a clean 409 (never a 500)."""
+        # Connection profile is written only when all required fields are present.
+        has_conn = bool(body and body.host and body.database and body.user and body.password)
+        if has_conn and not data_source_connections.encryption_available():
+            # Fail BEFORE ratifying so we never mint an unqueryable version due
+            # to a missing key. Clean message; never the password.
+            raise HTTPException(status_code=400, detail="encryption key not configured")
+
         with data_sources.store_lock():
             store = data_sources.get_pipeline_ingestion_store()
             cand = store.get_candidate(candidate_id)
@@ -2770,6 +2801,20 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
                 record = store.approve(candidate_id, approved_by=admin["username"])
             except Exception as e:
                 raise HTTPException(status_code=409, detail=f"cannot approve: {e}") from e
+
+        if has_conn:
+            try:
+                # Keyed by the ratified VERSION (== the browser query handle).
+                data_source_connections.write_connection_profile(
+                    source_handle=record.version,
+                    display_name=body.display_name or record.source_name,
+                    host=body.host, port=body.port, database=body.database,
+                    username=body.user, password=body.password,
+                    approved_by=admin["username"],
+                )
+            except data_source_connections.EncryptionKeyError:
+                raise HTTPException(status_code=400, detail="encryption key not configured")
+        # Response carries only the ratified record — never the password/token.
         return record.to_dict()
 
     @app.post("/api/admin/source-model-candidates/{candidate_id}/reject")
@@ -2840,12 +2885,16 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
         connection details. Distinct from the admin list (same data, user auth)
         so any authenticated user can choose a source to query."""
         store = data_sources.get_pipeline_ingestion_store()
+        conn_store = data_source_connections.get_connection_store()
         return {"source_models": [
             {
                 "version": r.version,
                 "source_name": r.source_name,
                 "entity_count": len(r.entities),
                 "approved_at": r.approved_at,
+                # Safe boolean only — whether a (read-only) connection is
+                # configured. No host/user/password ever exposed to the browser.
+                "has_connection": conn_store.has(r.version),
             }
             for r in store.list_ratified()
         ]}
