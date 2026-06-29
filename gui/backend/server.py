@@ -2671,8 +2671,22 @@ def build_app(adam_root: Path, logs_dir: Path) -> FastAPI:
                 password=body.password, database=body.database,
                 source_name=body.source_name, connect_factory=factory,
             )
-        except Exception:
-            # Scrub: a driver error can contain the DSN/password — coarse only.
+        except Exception as e:
+            # Client gets a coarse message (a driver error can contain the DSN).
+            # But the operator MUST be able to diagnose: log the real exception
+            # type + message + traceback server-side, scrubbed of the password.
+            import logging, traceback
+            _pw = body.password or ""
+            _detail = traceback.format_exc()
+            if _pw:
+                _detail = _detail.replace(_pw, "***")
+            logging.getLogger("adam.data_sources").error(
+                "introspect failed for source=%r db=%r host=%r: %s: %s\n%s",
+                body.source_name, body.database, body.host,
+                type(e).__name__,
+                (str(e).replace(_pw, "***") if _pw else str(e)),
+                _detail,
+            )
             raise HTTPException(status_code=400, detail="introspection failed: could not read the source schema")
         return candidate.to_dict()
 
