@@ -146,7 +146,27 @@ def test_prompt_builder_content():
     check("prompt forbids SQL", "no SQL" in sp.lower() or "not sql" in sp.lower())
     check("prompt forbids envelope fields",
           "connection_handle" in sp and "do not emit" in sp.lower())
-    check("prompt requires limit", "limit" in sp.lower())
+    # fix_join: field references must be qualified entity.field.
+    check("prompt requires qualified entity.field references", "entity.field" in sp)
+    check("prompt names every field-ref location",
+          all(loc in sp for loc in ("projection", "filters[].field", "joins[].left",
+                                    "joins[].right", "group_by", "aggregations[].field",
+                                    "order_by[].field")))
+    check("prompt forbids bare-entity references", "bare entity" in sp.lower())
+    check("prompt includes a worked join example",
+          '"students.school_id"' in sp and '"schools.id"' in sp)
+    # fix_sql: the COMPLETE contract — closed enum sets, alias exception, limit max.
+    check("prompt lists filter ops verbatim",
+          all(op in sp for op in ("eq", "ne", "lt", "lte", "gt", "gte", "in",
+                                  "not_in", "between", "like", "is_null", "not_null")))
+    check("prompt lists join types verbatim", "inner, left, right, full" in sp)
+    check("prompt lists aggregation fns verbatim", "count, sum, avg, min, max" in sp)
+    check("prompt lists order directions verbatim", "asc, desc" in sp)
+    check("prompt states the limit <= 1000 max", "<= 1000" in sp)
+    check("prompt explains the aggregation-alias exception",
+          "alias" in sp.lower() and "student_count" in sp)
+    check("prompt requires non-empty projection / never ['*']",
+          "['*']" in sp or "never project" in sp.lower() or "NEVER be ['*']" in sp)
 
 
 def test_no_real_model_call():

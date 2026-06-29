@@ -43,6 +43,12 @@ FILTER_OPS = {"eq", "ne", "lt", "lte", "gt", "gte", "in", "not_in",
 JOIN_TYPES = {"inner", "left", "right", "full"}
 AGG_FNS = {"count", "sum", "avg", "min", "max"}
 ORDER_DIRECTIONS = {"asc", "desc"}
+
+
+def _allowed(values) -> str:
+    """Deterministic, comma-joined rendering of a closed set for error hints.
+    Presentation only — never affects what validation accepts."""
+    return ", ".join(sorted(values))
 ROW_SCOPES = {"single", "small", "large"}
 
 # intent types that exist in the contract but are out of scope for this slice.
@@ -255,23 +261,24 @@ def validate(
         return _err(VALIDATION_ERROR,
                     f"limit {body.limit} exceeds configured max {config.max_limit}")
 
-    # 8. Closed-enum checks for body elements.
+    # 8. Closed-enum checks for body elements. Messages append the allowed set
+    #    (message-only aid) — what is ACCEPTED is unchanged.
     for f in body.filters:
         if f.op not in FILTER_OPS:
-            return _err(VALIDATION_ERROR, f"unknown filter op: {f.op!r}")
+            return _err(VALIDATION_ERROR, f"unknown filter op: {f.op!r} (allowed: {_allowed(FILTER_OPS)})")
     for j in body.joins:
         if j.type not in JOIN_TYPES:
-            return _err(VALIDATION_ERROR, f"unknown join type: {j.type!r}")
+            return _err(VALIDATION_ERROR, f"unknown join type: {j.type!r} (allowed: {_allowed(JOIN_TYPES)})")
     for a in body.aggregations:
         # Case-insensitive backstop: the canonical plan is already lowercased at
         # parse time, but compare lowercased so a directly-constructed plan with
         # an uppercase fn (e.g. "COUNT") is still accepted. The allowed SET is
         # unchanged — only case variants of the existing five are tolerated.
         if a.fn.lower() not in AGG_FNS:
-            return _err(VALIDATION_ERROR, f"unknown aggregation fn: {a.fn!r}")
+            return _err(VALIDATION_ERROR, f"unknown aggregation fn: {a.fn!r} (allowed: {_allowed(AGG_FNS)})")
     for o in body.order_by:
         if o.direction not in ORDER_DIRECTIONS:
-            return _err(VALIDATION_ERROR, f"unknown order direction: {o.direction!r}")
+            return _err(VALIDATION_ERROR, f"unknown order direction: {o.direction!r} (allowed: {_allowed(ORDER_DIRECTIONS)})")
 
     # 9. Source model known.
     model = model_resolver(plan.source_model_version)
@@ -290,7 +297,12 @@ def validate(
         if alias_allowed and ref in aliases:
             continue
         if model.resolve(ref, body.entities) is None:
-            return _err(SOURCE_MODEL_ERROR, f"unresolved field reference in {loc}: {ref!r}")
+            # Message-only hint: a bare (unqualified) ref is the common planner
+            # mistake — point at the expected 'entity.field' form. What is
+            # ACCEPTED is unchanged; only the error text is clearer.
+            hint = "" if (isinstance(ref, str) and "." in ref) else \
+                " (expected entity.field, e.g. students.school_id)"
+            return _err(SOURCE_MODEL_ERROR, f"unresolved field reference in {loc}: {ref!r}{hint}")
 
     # 12. Capability gating (statically detectable).
     if body.joins and not capabilities.supports_join:

@@ -114,15 +114,57 @@ def build_system_prompt(source_model: SourceModel) -> str:
     lines.append("Rules:")
     lines.append("  - operation MUST be 'select'.")
     lines.append("  - Reference ONLY the entities and fields listed above; do not invent any.")
-    lines.append("  - 'limit' is REQUIRED (a positive integer). Never project ['*'].")
+    lines.append("  - 'projection' MUST be non-empty and MUST NEVER be ['*'].")
     lines.append(
-        "  - Aggregation 'fn' MUST be one of (lowercase): count, sum, avg, min, max."
+        "  - Output ONLY the JSON body. No prose, no markdown, no SQL."
     )
-    lines.append("  - Output ONLY the JSON body. No prose, no markdown, no SQL.")
     lines.append(
         "  - Do NOT include any envelope fields. Specifically, do NOT emit "
         "connection_handle, source_type, source_model_version, plan_version, "
         "intent_type, or purpose. Those are set by the runtime, not by you."
+    )
+    lines.append("")
+    lines.append("Field references:")
+    lines.append(
+        "  - EVERY field reference uses the form entity.field (e.g. students.school_id)."
+    )
+    lines.append(
+        "  - This applies to projection, filters[].field, joins[].left, joins[].right, "
+        "group_by, aggregations[].field, and order_by[].field."
+    )
+    lines.append(
+        "  - NEVER use a bare entity/table name where a field is expected (e.g. use "
+        "students.id, not students). In 'joins' you join on a column, not a table."
+    )
+    lines.append(
+        "  - EXCEPTION (aggregation aliases): order_by[].field and projection entries "
+        "may be EITHER an entity.field reference OR an aggregation alias that exactly "
+        "matches an aggregations[].as value. Aliases are NOT allowed in filters, joins, "
+        "group_by, or aggregations[].field. Example: if aggregations has "
+        '{"fn":"count","field":"students.id","as":"student_count"}, then order_by may '
+        'use {"field":"student_count","direction":"desc"}.'
+    )
+    lines.append("")
+    lines.append("Closed value sets (use EXACTLY these tokens, lowercase):")
+    lines.append(
+        "  - filters[].op: eq, ne, lt, lte, gt, gte, in, not_in, between, like, "
+        "is_null, not_null"
+    )
+    lines.append("  - joins[].type: inner, left, right, full")
+    lines.append("  - aggregations[].fn: count, sum, avg, min, max")
+    lines.append("  - order_by[].direction: asc, desc")
+    lines.append("")
+    lines.append("Limit:")
+    lines.append("  - limit is REQUIRED, a positive integer, and MUST be <= 1000.")
+    lines.append("")
+    lines.append("Correct example (shape only; use the real entities/fields listed above):")
+    lines.append(
+        '  {"operation":"select","entities":["students","schools"],'
+        '"projection":["schools.name"],'
+        '"joins":[{"left":"students.school_id","right":"schools.id","type":"inner"}],'
+        '"group_by":["schools.name"],'
+        '"aggregations":[{"fn":"count","field":"students.id","as":"student_count"}],'
+        '"order_by":[{"field":"student_count","direction":"desc"}],"limit":10}'
     )
     return "\n".join(lines)
 
