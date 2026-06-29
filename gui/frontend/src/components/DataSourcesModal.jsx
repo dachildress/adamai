@@ -6,6 +6,7 @@ import {
   approveSourceModelCandidate,
   rejectSourceModelCandidate,
   fetchSourceModels,
+  removeSourceConnection,
 } from '../lib/api'
 
 /**
@@ -75,8 +76,32 @@ export function DataSourcesModal({ onClose }) {
   async function handleApprove(id) {
     setBusy('approve'); setError(null)
     try {
-      await approveSourceModelCandidate(id)
+      // Send the connection fields so the backend writes the encrypted profile
+      // that makes the source queryable. Field names match the backend body.
+      await approveSourceModelCandidate(id, {
+        host: form.host,
+        port: Number(form.port) || 3306,
+        user: form.user,
+        password: form.password,
+        database: form.database,
+        display_name: form.source_name?.trim() || undefined,
+      })
       setCandidate(null)
+      await refresh()
+    } catch (e) { setError(e.message || String(e)) }
+    finally { setBusy('') }
+  }
+
+  async function handleRemoveConnection(version) {
+    if (!window.confirm(
+      `Remove the stored connection for ${version}?\n\n` +
+      `This deletes the encrypted credential only. The approved schema and its ` +
+      `governance history are kept, but the source can't be queried until it is ` +
+      `re-onboarded with connection details.`,
+    )) return
+    setBusy('remove-connection'); setError(null)
+    try {
+      await removeSourceConnection(version)
       await refresh()
     } catch (e) { setError(e.message || String(e)) }
     finally { setBusy('') }
@@ -242,15 +267,28 @@ export function DataSourcesModal({ onClose }) {
               <div className="gov-admin__empty">No ratified models yet.</div>
             ) : (
               <table className="gov-admin__table gov-admin__table--users">
-                <thead><tr><th>Source</th><th>Version</th><th>Entities</th><th>Approved by</th><th>Approved at</th></tr></thead>
+                <thead><tr><th>Source</th><th>Version</th><th>Entities</th><th>Connection</th><th>Approved by</th><th>Approved at</th><th></th></tr></thead>
                 <tbody>
                   {models.map(m => (
                     <tr key={m.version}>
                       <td>{m.source_name}</td>
                       <td><code>{m.version}</code></td>
                       <td>{m.entity_count}</td>
+                      <td>
+                        <span className={`gov-admin__status gov-admin__status--${m.has_connection ? 'active' : 'suspended'}`}>
+                          {m.has_connection ? 'connected' : 'no connection'}
+                        </span>
+                      </td>
                       <td>{m.approved_by}</td>
                       <td>{m.approved_at}</td>
+                      <td>
+                        {m.has_connection && (
+                          <button type="button" className="btn btn--danger btn--small"
+                                  onClick={() => handleRemoveConnection(m.version)} disabled={!!busy}>
+                            {busy === 'remove-connection' ? 'Removing…' : 'Remove connection'}
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

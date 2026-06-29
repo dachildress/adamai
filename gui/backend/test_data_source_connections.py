@@ -155,6 +155,35 @@ def test_tampered_token_fails_clean():
                 check("wrong key -> DecryptionError", True)
 
 
+def test_delete_removes_only_the_profile():
+    key = Fernet.generate_key().decode()
+    with tempfile.TemporaryDirectory() as raw, env(ADAM_DATA_SOURCE_ENCRYPTION_KEY=key):
+        tmp = Path(raw)
+        dsc.init_connection_store(tmp)
+        dsc.write_connection_profile(source_handle="a-v1", display_name="A", host="h",
+            port=3306, database="da", username="u", password=PW, approved_by="adm")
+        dsc.write_connection_profile(source_handle="b-v1", display_name="B", host="h",
+            port=3306, database="db", username="u", password=PW, approved_by="adm")
+        path = tmp / "pipeline_data" / "source_connections.json"
+
+        removed = dsc.delete_connection_profile("a-v1")
+        check("delete returns True for an existing profile", removed is True)
+
+        store = dsc.get_connection_store()
+        check("deleted handle is gone", store.has("a-v1") is False)
+        check("other handle untouched", store.has("b-v1") is True)
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        check("deleted handle absent from store file", "a-v1" not in data["profiles"])
+        check("surviving handle still in store file", "b-v1" in data["profiles"])
+
+        again = dsc.delete_connection_profile("a-v1")
+        check("deleting an absent profile returns False (no error)", again is False)
+
+        missing = dsc.delete_connection_profile("never-existed")
+        check("deleting an unknown handle returns False", missing is False)
+
+
 def main():
     print("Data-source connection store tests")
     print("=" * 60)
@@ -165,6 +194,7 @@ def main():
         test_missing_key_fails_safe,
         test_invalid_key_fails_safe,
         test_tampered_token_fails_clean,
+        test_delete_removes_only_the_profile,
     ]:
         print(f"\n{t.__name__}:")
         t()

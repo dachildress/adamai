@@ -205,6 +205,17 @@ class ConnectionProfileStore:
     def has(self, source_handle: str) -> bool:
         return source_handle in self.profiles
 
+    def delete(self, source_handle: str) -> bool:
+        """Remove the connection profile (the encrypted credential) for a handle
+        and persist atomically. Returns True if a profile was removed, False if
+        none existed. Touches ONLY the connection store — never the ratified
+        record / source model. Caller holds the store lock (mirrors put)."""
+        if source_handle not in self.profiles:
+            return False
+        del self.profiles[source_handle]
+        self._save()
+        return True
+
     def list_safe(self) -> List[Dict[str, Any]]:
         return [p.safe_view() for p in self.profiles.values()]
 
@@ -234,3 +245,12 @@ def write_connection_profile(
         store = get_connection_store()
         store.put(profile)
     return profile
+
+
+def delete_connection_profile(source_handle: str) -> bool:
+    """Remove a connection profile (encrypted credential) under the lock. Returns
+    True if one was removed, False if absent. Never touches the ratified record /
+    source model — history is preserved."""
+    with _STORE_LOCK:
+        store = get_connection_store()
+        return store.delete(source_handle)

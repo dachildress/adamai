@@ -201,11 +201,14 @@ def test_non_admin_403():
             ("post", "/api/admin/source-model-candidates/abc/approve", None),
             ("post", "/api/admin/source-model-candidates/abc/reject", None),
             ("get", "/api/admin/source-models", None),
+            ("delete", "/api/admin/data-sources/some-v1/connection", None),
         ]
         all403 = True
         for method, url, jb in routes:
             if method == "get":
                 r = c.get(url, cookies=cook, headers=hdr)
+            elif method == "delete":
+                r = c.delete(url, cookies=cook, headers=hdr)
             else:
                 r = c.post(url, cookies=cook, headers=hdr, json=jb or {})
             if r.status_code != 403:
@@ -640,6 +643,60 @@ def test_has_connection_flag_safe():
               "password" not in text and "username" not in text and "encrypted" not in text)
 
 
+def test_admin_source_models_has_connection_flag():
+    from fastapi.testclient import TestClient
+    key = Fernet.generate_key().decode()
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        v_conn = _approve_with_conn(app, c, cook, hdr, key, source_name="withconn").json()["version"]
+        v_noconn = _ratify_widgets(app, c, cook, hdr)   # no connection body
+        models = c.get("/api/admin/source-models", cookies=cook, headers=hdr).json()["source_models"]
+        by_v = {m["version"]: m for m in models}
+        check("admin list: connected source -> has_connection True", by_v[v_conn]["has_connection"] is True)
+        check("admin list: unconnected source -> has_connection False", by_v[v_noconn]["has_connection"] is False)
+        check("admin list exposes no credentials",
+              "password" not in json.dumps(models) and "username" not in json.dumps(models))
+
+
+def test_delete_connection_revokes_credential_keeps_record():
+    from fastapi.testclient import TestClient
+    key = Fernet.generate_key().decode()
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw); app = make_app(tmp); c = TestClient(app)
+        cook, hdr = ctx("admin")
+        version = _approve_with_conn(app, c, cook, hdr, key).json()["version"]
+
+        # Connected before delete.
+        before = c.get("/api/admin/source-models", cookies=cook, headers=hdr).json()["source_models"]
+        check("connected before delete", {m["version"]: m for m in before}[version]["has_connection"] is True)
+
+        r = c.delete(f"/api/admin/data-sources/{version}/connection", cookies=cook, headers=hdr)
+        check("delete connection -> 200", r.status_code == 200, r.text[:160])
+        check("delete reports removed:true", r.json().get("removed") is True, r.text)
+        check("delete response carries no credential data",
+              DB_PW not in r.text and "encrypted" not in r.text)
+
+        # Ratified record preserved, but no longer queryable.
+        after = c.get("/api/admin/source-models", cookies=cook, headers=hdr).json()["source_models"]
+        by_v = {m["version"]: m for m in after}
+        check("ratified record still present after delete (history kept)", version in by_v)
+        check("source now has_connection False after delete", by_v[version]["has_connection"] is False)
+
+        # Deleting again is graceful (no profile to remove).
+        r2 = c.delete(f"/api/admin/data-sources/{version}/connection", cookies=cook, headers=hdr)
+        check("re-delete -> 200 removed:false (graceful)",
+              r2.status_code == 200 and r2.json().get("removed") is False, r2.text)
+
+        # Querying a source whose connection was removed -> CONNECTION_NOT_CONFIGURED.
+        app.state.pipeline_model_fns_provider = lambda: ((lambda s, o: "{}"), (lambda s, p: "{}"))
+        ucook, uhdr = ctx("pilot")
+        q = c.post("/api/data-intelligence/query", cookies=ucook, headers=uhdr,
+                   json={"version": version, "objective": "x"})
+        check("query after connection removed -> CONNECTION_NOT_CONFIGURED",
+              q.status_code == 200 and q.json().get("error") == "CONNECTION_NOT_CONFIGURED", str(q.json()))
+
+
 def main():
     print("Data Sources web integration tests")
     print("=" * 60)
@@ -669,6 +726,8 @@ def main():
         test_query_no_profile_connection_not_configured,
         test_query_missing_key_resolution_failed,
         test_has_connection_flag_safe,
+        test_admin_source_models_has_connection_flag,
+        test_delete_connection_revokes_credential_keeps_record,
     ]:
         print(f"\n{t.__name__}:")
         t()
