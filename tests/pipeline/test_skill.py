@@ -89,6 +89,18 @@ def test_fenced_and_prose():
     check("body wrapped in fences/prose still parses", plan.body.operation == "select")
 
 
+def test_whole_string_json_fence_extracts_one_object():
+    # fix_tokens Part 3: a whole-string ```json fence wrapping a complete object
+    # is stripped explicitly so the object is never missed.
+    from adam.pipeline.skill import _extract_json_objects, _strip_code_fences
+    fenced = "```json\n" + WELL_FORMED_BODY + "\n```"
+    check("fenced complete object -> exactly one extracted", len(_extract_json_objects(fenced)) == 1)
+    check("strip returns inner JSON", _strip_code_fences(fenced).strip().startswith("{"))
+    check("plain (no-lang) fence also yields one object",
+          len(_extract_json_objects("```\n" + WELL_FORMED_BODY + "\n```")) == 1)
+    check("unfenced still yields one object", len(_extract_json_objects(WELL_FORMED_BODY)) == 1)
+
+
 def test_non_json():
     expect_parse_error("I cannot help with that.", "non-JSON text")
     expect_parse_error("", "empty output")
@@ -186,6 +198,7 @@ def main():
     for t in [
         test_well_formed_body,
         test_fenced_and_prose,
+        test_whole_string_json_fence_extracts_one_object,
         test_non_json,
         test_multiple_objects,
         test_sql_text,

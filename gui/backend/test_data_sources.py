@@ -775,6 +775,61 @@ def test_run_governed_query_threads_data_scope():
         reset_ratified()
 
 
+def test_data_intelligence_params_config_driven():
+    # fix_tokens: model budgets/temperatures come from runtime.json, with
+    # single-source per-key fallback. Inject a fake config_loader to prove it.
+    from backend import data_sources as ds
+
+    class FakeCL:
+        RUNTIME_PATH = "runtime.json"
+        block = {}
+        @classmethod
+        def _load_json(cls, path, name):
+            return {"data_intelligence": cls.block} if cls.block is not None else {}
+
+    # Override interp budget only -> reflected; others fall back to defaults.
+    FakeCL.block = {"interp_max_tokens": 9999}
+    p = ds._data_intelligence_params(FakeCL)
+    check("interp_max_tokens is config-driven", p["interp_max_tokens"] == 9999, str(p))
+    check("plan_max_tokens falls back to default", p["plan_max_tokens"] == 1024, str(p))
+    check("interp_temperature falls back to default", p["interp_temperature"] == 0.2, str(p))
+    check("no hardcoded shared budget (plan != interp by default)",
+          p["plan_max_tokens"] != p["interp_max_tokens"], str(p))
+
+    # Absent block -> all defaults (single source).
+    FakeCL.block = None
+    pd = ds._data_intelligence_params(FakeCL)
+    check("absent block -> defaults", pd == ds._DATA_INTELLIGENCE_DEFAULTS, str(pd))
+
+    # Unreadable config -> defaults, never raises.
+    class BoomCL:
+        RUNTIME_PATH = "x"
+        @staticmethod
+        def _load_json(path, name):
+            raise RuntimeError("nope")
+    check("unreadable config -> defaults", ds._data_intelligence_params(BoomCL) == ds._DATA_INTELLIGENCE_DEFAULTS)
+
+
+def test_no_hardcoded_token_literal_in_provider():
+    import inspect
+    from backend import data_sources as ds
+    src = inspect.getsource(ds.default_model_fns_provider)
+    check("provider has no hardcoded 1024 literal", "1024" not in src, src[:200])
+    check("provider reads config params", "_data_intelligence_params" in src)
+
+
+def test_runtime_json_has_data_intelligence_block():
+    # The shipped config carries the block; changing interp_max_tokens there is
+    # the supported, no-code tuning knob.
+    rt = json.loads((Path(__file__).resolve().parents[2] / "config" / "runtime.json").read_text())
+    di = rt.get("data_intelligence")
+    check("runtime.json has data_intelligence block", isinstance(di, dict), str(di))
+    check("block carries the four tunables",
+          all(k in di for k in ("plan_max_tokens", "interp_max_tokens",
+                                "plan_temperature", "interp_temperature")), str(di))
+    check("interp budget larger than plan budget", di["interp_max_tokens"] > di["plan_max_tokens"], str(di))
+
+
 def main():
     print("Data Sources web integration tests")
     print("=" * 60)
@@ -809,6 +864,9 @@ def main():
         test_admin_source_models_has_connection_flag,
         test_delete_connection_revokes_credential_keeps_record,
         test_run_governed_query_threads_data_scope,
+        test_data_intelligence_params_config_driven,
+        test_no_hardcoded_token_literal_in_provider,
+        test_runtime_json_has_data_intelligence_block,
     ]:
         print(f"\n{t.__name__}:")
         t()

@@ -196,18 +196,43 @@ _DEFAULT_AGENT = "Operator"   # ADAM's structured-output agent; closest analog t
                               # emitting a structured query body.
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, "").strip() or default)
-    except ValueError:
-        return default
+# Single source of truth for Data Intelligence model budgets/temperatures. These
+# are the fallback ONLY when config/runtime.json's data_intelligence block (or a
+# key) is absent — config is the primary source. Never a hardcoded shared 1024.
+_DATA_INTELLIGENCE_DEFAULTS = {
+    "plan_max_tokens": 1024,
+    "interp_max_tokens": 4096,
+    "plan_temperature": 0.0,
+    "interp_temperature": 0.2,
+}
 
 
-def _env_float(name: str, default: float) -> float:
+def _data_intelligence_params(config_loader) -> Dict[str, Any]:
+    """Read the data_intelligence model params from config/runtime.json, falling
+    back per-key to _DATA_INTELLIGENCE_DEFAULTS. Read raw (not the validated
+    runtime config) so the GUI process doesn't depend on startup validation —
+    same discipline the provider uses for providers/models/agents."""
+    block: Dict[str, Any] = {}
     try:
-        return float(os.environ.get(name, "").strip() or default)
-    except ValueError:
-        return default
+        rt = config_loader._load_json(config_loader.RUNTIME_PATH, "runtime.json")
+        if isinstance(rt.get("data_intelligence"), dict):
+            block = rt["data_intelligence"]
+    except Exception:
+        block = {}
+
+    def _num(key, caster):
+        default = _DATA_INTELLIGENCE_DEFAULTS[key]
+        try:
+            return caster(block.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "plan_max_tokens": _num("plan_max_tokens", int),
+        "interp_max_tokens": _num("interp_max_tokens", int),
+        "plan_temperature": _num("plan_temperature", float),
+        "interp_temperature": _num("interp_temperature", float),
+    }
 
 
 def _resolve_model_id(models: Dict[str, Any], agents: Dict[str, Any]) -> Optional[str]:
@@ -259,8 +284,13 @@ def default_model_fns_provider() -> Optional[ModelFns]:
     if not api_key_env or not os.environ.get(api_key_env, "").strip():
         return None
 
-    max_tokens = _env_int("ADAM_DATA_INTELLIGENCE_MAX_TOKENS", 1024)
-    temperature = _env_float("ADAM_DATA_INTELLIGENCE_TEMPERATURE", 0.0)  # low: planning must emit parseable JSON
+    # Token budgets + temperatures are CONFIG-DRIVEN (config/runtime.json's
+    # data_intelligence block), NOT hardcoded. Planning stays small at temp 0.0
+    # for parseable JSON; interpretation gets a larger budget so a rich result's
+    # JSON cannot truncate mid-object (the old shared, too-small budget truncated
+    # it → INTERPRETATION_ERROR "no JSON object"). Read raw via _load_json so the
+    # GUI process doesn't depend on load_and_validate_runtime_config having run.
+    di = _data_intelligence_params(config_loader)
 
     def planning_fn(system_prompt: str, objective: str) -> str:
         # Returns the raw model string unchanged; the pipeline's parse_body
@@ -268,7 +298,7 @@ def default_model_fns_provider() -> Optional[ModelFns]:
         return client_dispatch.call_model(
             model_id=model_id, system_prompt=system_prompt,
             messages=[{"role": "user", "content": objective}],
-            max_tokens=max_tokens, temperature=temperature,
+            max_tokens=di["plan_max_tokens"], temperature=di["plan_temperature"],
             models=models, providers=providers,
         )
 
@@ -276,7 +306,7 @@ def default_model_fns_provider() -> Optional[ModelFns]:
         return client_dispatch.call_model(
             model_id=model_id, system_prompt=system_prompt,
             messages=[{"role": "user", "content": observations}],
-            max_tokens=max_tokens, temperature=temperature,
+            max_tokens=di["interp_max_tokens"], temperature=di["interp_temperature"],
             models=models, providers=providers,
         )
 
