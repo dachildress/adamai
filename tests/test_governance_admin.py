@@ -421,7 +421,9 @@ def test_education_profile_carries_data_intelligence_block():
           DataScope.from_block(gen.get("data_intelligence")).enabled is False)
 
     data = json.loads((GUI_ROOT / "governance.json").read_text(encoding="utf-8"))
-    result = governance.validate_governance_data(data, SKILLS)
+    # data_intelligence is a real skill in skills/, so it's part of the live
+    # skill universe (education_safe now permits it in allowed_skills).
+    result = governance.validate_governance_data(data, SKILLS + ["data_intelligence"])
     check("governance.json with data_intelligence still validates",
           result["valid"] is True, str(result.get("errors")))
 

@@ -29,7 +29,8 @@
       "test_echo",
       "websearch",
       "slidedeck",
-      "coder"
+      "coder",
+      "data_intelligence"
     ],
     "disabled_skills": [],
     "load_disabled_skills_metadata": true,

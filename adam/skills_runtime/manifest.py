@@ -554,74 +554,64 @@ def discover_skills(skills_cfg: Dict[str, Any]) -> SkillCatalog:
     return catalog
 
 
-def build_skill_manifest_block(catalog: SkillCatalog) -> str:
+def build_skill_manifest_block(catalog: SkillCatalog, caller_role: str) -> str:
     """
-    Build the dynamic skill manifest supplement injected into the system
-    prompts of agents whose role is allowed to invoke skills. Lists each
-    executable skill with its actions and SKILL.md body. Also lists any
-    documentation-only skills separately so the agent knows they exist
-    but can't be invoked via skill_call.
+    Build the dynamic skill-manifest supplement for ONE agent's system prompt:
+    the executable skills whose `allowed_callers` include `caller_role`, with
+    their actions, SKILL.md body, and the skill_call syntax.
+
+    Caller-filtered so the advertisement EXACTLY matches the runtime's
+    allowed_callers enforcement — an agent is never told about a skill the
+    runtime would then reject (which would only produce noise / failed calls).
+
+    Returns "" when the caller has no invocable skills (no empty or placeholder
+    block is emitted — the section is simply omitted for that agent).
     """
-    if not catalog.executable and not catalog.documentation_only:
+    callable_skills = [
+        m for m in catalog.list_executable() if caller_role in m.allowed_callers
+    ]
+    if not callable_skills:
         return ""
 
     parts: List[str] = []
     parts.append("# AVAILABLE SKILLS")
     parts.append("")
+    parts.append("## How to invoke")
+    parts.append("")
+    parts.append(
+        "You may invoke any of the executable skills listed below by emitting a "
+        "fenced ```skill_call JSON block in your response. The block must follow "
+        "this exact structure (one or more calls allowed per block):"
+    )
+    parts.append("")
+    parts.append("```skill_call")
+    parts.append('{')
+    parts.append('  "skill_calls": [')
+    parts.append('    {')
+    parts.append('      "skill": "<skill_name>",')
+    parts.append('      "action": "<action_name>",')
+    parts.append('      "args": { ... }')
+    parts.append('    }')
+    parts.append('  ]')
+    parts.append('}')
+    parts.append("```")
+    parts.append("")
+    parts.append("The SkillRuntime will execute each call, audit it, and inject "
+                 "a result summary into the transcript. If the call fails, you "
+                 "will see a clear error message and can correct on a later turn.")
+    parts.append("")
 
-    if catalog.executable:
-        parts.append("## How to invoke")
+    parts.append("## Executable skills (you are authorized to call these)")
+    parts.append("")
+    for manifest in callable_skills:
+        actions_list = ", ".join(manifest.actions.keys())
+        parts.append(f"### {manifest.name} (v{manifest.version}) - actions: {actions_list}")
         parts.append("")
-        parts.append(
-            "You may invoke any of the executable skills listed below by emitting a "
-            "fenced ```skill_call JSON block in your response. The block must follow "
-            "this exact structure (one or more calls allowed per block):"
-        )
-        parts.append("")
-        parts.append("```skill_call")
-        parts.append('{')
-        parts.append('  "skill_calls": [')
-        parts.append('    {')
-        parts.append('      "skill": "<skill_name>",')
-        parts.append('      "action": "<action_name>",')
-        parts.append('      "args": { ... }')
-        parts.append('    }')
-        parts.append('  ]')
-        parts.append('}')
-        parts.append("```")
-        parts.append("")
-        parts.append("The SkillRuntime will execute each call, audit it, and inject "
-                     "a result summary into the transcript. If the call fails, you "
-                     "will see a clear error message and can correct on a later turn.")
-        parts.append("")
-
-        parts.append("## Executable skills")
-        parts.append("")
-        for manifest in catalog.list_executable():
-            actions_list = ", ".join(manifest.actions.keys())
-            parts.append(f"### {manifest.name} (v{manifest.version}) - actions: {actions_list}")
-            parts.append("")
-            skill_md = manifest.read_skill_md()
-            if skill_md.strip():
-                parts.append(skill_md.strip())
-            else:
-                parts.append(manifest.description or "(no description)")
-            parts.append("")
-
-    if catalog.documentation_only:
-        parts.append("## Discovered documentation-only skills")
-        parts.append("")
-        parts.append(
-            "These skills provide guidance but CANNOT be invoked through skill_call "
-            "in this ADAM runtime. Do not attempt to call them -- attempting will "
-            "fail with error_class='documentation_only_skill'. You may, however, "
-            "read their SKILL.md content as reference material when reasoning."
-        )
-        parts.append("")
-        for manifest in catalog.list_documentation_only():
-            parts.append(f"### {manifest.name} (v{manifest.version}) - documentation only")
-            parts.append("")
+        skill_md = manifest.read_skill_md()
+        if skill_md.strip():
+            parts.append(skill_md.strip())
+        else:
             parts.append(manifest.description or "(no description)")
-            parts.append("")
+        parts.append("")
 
     return "\n".join(parts)
