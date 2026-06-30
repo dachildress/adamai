@@ -392,11 +392,23 @@ def run_governed_query(
             scope=scope,
             max_rows=max_rows,
         )
-    except Exception:
+    except Exception as e:
         # A genuine model/execution failure (e.g. a provider error after
-        # retries) propagated from the seam. Surface a CLEAN, credential-free
-        # outcome — never a 500, never a stack trace / API key to the browser,
-        # and never a fabricated empty plan. (Validation/Sentinel blocks are
-        # NOT exceptions — they come back as SkillResult.status below.)
+        # retries, or a SQL-translation/execution error) propagated from the
+        # seam. Surface a CLEAN, credential-free outcome to the caller — never a
+        # 500, never a stack trace / API key to the browser, and never a
+        # fabricated empty plan. (Validation/Sentinel blocks are NOT exceptions —
+        # they come back as SkillResult.status below.)
+        #
+        # But the operator MUST be able to diagnose what actually failed: log the
+        # real exception type + message + traceback server-side (the message
+        # carries no credentials here — the password lives only inside the
+        # resolved connect_fn closure, never in scope), so a recurring execution
+        # failure is visible in the journal instead of an opaque QUERY_FAILED.
+        import logging, traceback
+        logging.getLogger("adam.data_sources").error(
+            "governed query failed for version=%r: %s: %s\n%s",
+            version, type(e).__name__, str(e), traceback.format_exc(),
+        )
         return {"error": "QUERY_FAILED"}
     return {"result": serialize_skill_result(result)}
