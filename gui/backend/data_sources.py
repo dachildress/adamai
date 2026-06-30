@@ -93,9 +93,14 @@ def get_pipeline_ingestion_store() -> IngestionStore:
     """Construct the canonical IngestionStore. Constructing it RELOADS the
     persisted candidates/ratified records from disk and re-registers ratified
     SourceModels into the process registry — so this is also the 'reload
-    before query' discipline. Every route obtains its store here."""
+    before query' discipline. Every route obtains its store here.
+
+    Lazy init: in the WEB process build_app calls init_data_sources at startup,
+    but the deliberation SUBPROCESS (which invokes the data_intelligence skill)
+    never runs build_app. So if the path is unset, initialize it from the
+    canonical install root. Idempotent — a no-op when already initialized."""
     if _STORE_PATH is None:
-        raise RuntimeError("data sources not initialized (call init_data_sources)")
+        init_data_sources(_REPO_ROOT)
     return IngestionStore(_STORE_PATH)
 
 

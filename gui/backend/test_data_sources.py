@@ -775,6 +775,48 @@ def test_run_governed_query_threads_data_scope():
         reset_ratified()
 
 
+def test_ingestion_store_lazy_init_no_build_app():
+    # The deliberation subprocess never runs build_app; get_pipeline_ingestion_store
+    # must self-initialize from the repo root rather than raising. Idempotent.
+    from backend import data_sources as ds
+    saved = ds._STORE_PATH
+    try:
+        ds._STORE_PATH = None
+        store = ds.get_pipeline_ingestion_store()  # must NOT raise
+        check("lazy-init sets the ingestion store path",
+              ds._STORE_PATH is not None and str(ds._STORE_PATH).endswith("source_models.json"))
+        check("returns an IngestionStore", store is not None)
+        ds.init_data_sources("/tmp/some-deploy-dir")
+        before = ds._STORE_PATH
+        ds.get_pipeline_ingestion_store()
+        check("explicit init preserved (lazy-init no-ops when set)", ds._STORE_PATH == before)
+    finally:
+        ds._STORE_PATH = saved
+
+
+def test_governed_query_subprocess_safe_returns_clean_error():
+    # With NEITHER store initialized (as in the deliberation subprocess), the
+    # governed query must reach a CLEAN discriminated error — never the raw
+    # "data sources not initialized" RuntimeError the skill surfaced before.
+    from backend import data_sources as ds
+    from backend import data_source_connections as dsc
+    from adam.pipeline import reset_ratified
+    saved_i, saved_c = ds._STORE_PATH, dsc._STORE_PATH
+    try:
+        ds._STORE_PATH = None
+        dsc._STORE_PATH = None
+        out = ds.run_governed_query(
+            version="surely-not-ratified-v9", objective="x",
+            user={"username": "Seeker"}, model_fns=None,
+            resolve_connection=ds.default_resolve_connection,
+        )
+        check("uninitialized subprocess path -> clean UNKNOWN_VERSION (no RuntimeError)",
+              out.get("error") == "UNKNOWN_VERSION", str(out))
+    finally:
+        ds._STORE_PATH, dsc._STORE_PATH = saved_i, saved_c
+        reset_ratified()
+
+
 def test_data_intelligence_params_config_driven():
     # fix_tokens: model budgets/temperatures come from runtime.json, with
     # single-source per-key fallback. Inject a fake config_loader to prove it.
@@ -864,6 +906,8 @@ def main():
         test_admin_source_models_has_connection_flag,
         test_delete_connection_revokes_credential_keeps_record,
         test_run_governed_query_threads_data_scope,
+        test_ingestion_store_lazy_init_no_build_app,
+        test_governed_query_subprocess_safe_returns_clean_error,
         test_data_intelligence_params_config_driven,
         test_no_hardcoded_token_literal_in_provider,
         test_runtime_json_has_data_intelligence_block,
