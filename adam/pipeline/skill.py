@@ -28,7 +28,7 @@ model-free.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
 from .execution_plan import PLAN_VERSION, ExecutionPlan, QueryBody
@@ -496,11 +496,15 @@ def analyze_objective(
     adapter: Any = None,
     governance: Any = None,
     scope: Any = None,
+    max_rows: Optional[int] = None,
 ) -> SkillResult:
     """Objective → governed plan → execute → runtime observations → model
     interpretation → assembled SkillResult. Honest on denial/empty/failure:
     no fabricated observations or inferences when there's nothing (or nothing
-    permitted) to interpret."""
+    permitted) to interpret.
+
+    ``max_rows`` (agent path) CLAMPS the plan's effective limit to
+    min(plan.limit, max_rows) before execution — a budget cap, not a rejection."""
     # Slice-4 flow: build a plan (skill-owned envelope + model body).
     try:
         plan = propose_plan(objective, source_model, planning_model_fn,
@@ -511,6 +515,12 @@ def analyze_objective(
             limitations=[f"No governed plan could be built from the model output: {e.detail}"],
             confidence="low", confidence_rationale="No plan was produced; nothing was executed.",
         )
+
+    # Clamp the effective row limit DOWN to the caller's budget (never up). The
+    # plan is frozen, so rebuild it (and its body) with the clamped limit.
+    if (max_rows is not None and isinstance(plan.body, QueryBody)
+            and plan.body.limit and plan.body.limit > max_rows):
+        plan = replace(plan, body=replace(plan.body, limit=max_rows))
 
     pipe = run_plan(plan, connection, adapter=adapter, source_model=source_model,
                     governance=governance, scope=scope)

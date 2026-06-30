@@ -30,6 +30,7 @@ from .source_model import (
     register_source_model,
     reset_ratified,
 )
+from .data_scope import DataScope
 from .ingestion import (
     APPROVED,
     PENDING,
@@ -179,6 +180,7 @@ __all__ = [
     "SentinelOutcome",
     "GovernanceConfig",
     "ScopeConfig",
+    "DataScope",
     "AdapterCostEstimate",
     "ALLOWED",
     "POLICY_DENIED",

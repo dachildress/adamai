@@ -196,6 +196,50 @@ def test_sentinel_ignores_sql_text():
           out.disposition == ALLOWED, str(out))
 
 
+def test_detail_level_aggregate_only():
+    # Default (aggregate_only=False): the web path is unchanged — a student-row
+    # plan with no aggregation is still ALLOWED by this gate.
+    student_rows = dict(entities=["students"], projection=["students.name"],
+                        filters=[], joins=[], group_by=[], aggregations=[], order_by=[])
+    out = evaluate(plan(**student_rows), gov(), scope())
+    check("default scope leaves student-row plan allowed", out.disposition == ALLOWED, str(out))
+
+    agg_scope = dict(aggregate_only=True, student_entities={"students"},
+                     identifying_fields={"students.name"})
+
+    # Unaggregated rows from a student entity -> denied under aggregate_only.
+    out = evaluate(plan(**student_rows), gov(), scope(**agg_scope))
+    check("aggregate-only denies unaggregated student rows",
+          out.disposition == POLICY_DENIED, str(out))
+
+    # Projecting an identifying field (even with an aggregation) -> denied.
+    ident = dict(entities=["students"], projection=["students.name"],
+                 filters=[], joins=[], group_by=["students.name"],
+                 aggregations=[{"fn": "count", "field": "students.id", "as": "n"}], order_by=[])
+    out = evaluate(plan(**ident), gov(), scope(**agg_scope))
+    check("aggregate-only denies identifying field in projection/group_by",
+          out.disposition == POLICY_DENIED, str(out))
+
+    # denied_fields are also treated as identifying under aggregate_only.
+    deny = dict(entities=["students", "schools"], projection=["schools.name", "students.ssn"],
+                filters=[], joins=[{"left": "students.school_id", "right": "schools.id", "type": "inner"}],
+                group_by=["schools.name"],
+                aggregations=[{"fn": "count", "field": "students.id", "as": "n"}], order_by=[])
+    out = evaluate(plan(**deny), gov(), scope(denied_fields={"students.ssn"}, **agg_scope))
+    check("denied field still blocked under aggregate-only",
+          out.disposition == POLICY_DENIED, str(out))
+
+    # A clean aggregate plan (count by school, no identifying fields) -> ALLOWED.
+    good = dict(entities=["students", "schools"], projection=["schools.name", "n"],
+                filters=[], joins=[{"left": "students.school_id", "right": "schools.id", "type": "inner"}],
+                group_by=["schools.name"],
+                aggregations=[{"fn": "count", "field": "students.id", "as": "n"}],
+                order_by=[{"field": "n", "direction": "desc"}])
+    out = evaluate(plan(**good), gov(), scope(**agg_scope))
+    check("aggregate-only allows a clean aggregate-by-school plan",
+          out.disposition == ALLOWED, str(out))
+
+
 def main():
     print("Slice 2 Phase 1: Sentinel predicates")
     print("=" * 60)
@@ -206,6 +250,7 @@ def main():
         test_entity_scope,
         test_field_denylist,
         test_cost_predicate,
+        test_detail_level_aggregate_only,
         test_detail_strings,
         test_validation_separate_from_sentinel,
         test_sentinel_ignores_sql_text,

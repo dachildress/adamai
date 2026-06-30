@@ -739,6 +739,42 @@ def test_delete_connection_revokes_credential_keeps_record():
               q.status_code == 200 and q.json().get("error") == "CONNECTION_NOT_CONFIGURED", str(q.json()))
 
 
+def test_run_governed_query_threads_data_scope():
+    # The agent path passes a profile-derived DataScope into run_governed_query;
+    # a denied field must be blocked by the SAME Sentinel (before any DB access).
+    from adam.pipeline import register_source_model, reset_ratified, SourceModel, DataScope
+    from backend import data_sources as ds
+    model = SourceModel(version="ds-scope-v1", entities={
+        "students": ("id", "name", "school_id", "first_name"),
+        "schools": ("id", "name"),
+    })
+    reset_ratified()
+    register_source_model(model)
+    orig_store = ds.get_pipeline_ingestion_store
+    ds.get_pipeline_ingestion_store = lambda: None  # don't wipe the registered model
+    try:
+        denied_plan = json.dumps({"operation": "select", "entities": ["students"],
+                                  "projection": ["students.first_name"], "limit": 10})
+        interp = json.dumps({"inferences": [], "recommendations": [], "assumptions": [],
+                             "limitations": [], "confidence": "low", "confidence_rationale": "x"})
+        scope = DataScope.from_block({"enabled": True, "allowed_sources": ["ds-scope-v1"],
+                                      "denied_fields": ["students.first_name"]})
+        out = ds.run_governed_query(
+            version="ds-scope-v1", objective="student names",
+            user={"username": "Seeker"},
+            model_fns=((lambda s, o: denied_plan), (lambda s, p: interp)),
+            resolve_connection=lambda v: (lambda: FakeConn()),
+            data_scope=scope,
+        )
+        res = out.get("result")
+        check("denied-field plan blocked under data_scope (policy_denied, no DB)",
+              res and res["status"] == "policy_denied", str(out))
+        check("blocked query leaks no field data", "first_name" not in json.dumps(res.get("observations", [])))
+    finally:
+        ds.get_pipeline_ingestion_store = orig_store
+        reset_ratified()
+
+
 def main():
     print("Data Sources web integration tests")
     print("=" * 60)
@@ -772,6 +808,7 @@ def main():
         test_approve_no_connection_fields_ratifies_connectionless,
         test_admin_source_models_has_connection_flag,
         test_delete_connection_revokes_credential_keeps_record,
+        test_run_governed_query_threads_data_scope,
     ]:
         print(f"\n{t.__name__}:")
         t()
