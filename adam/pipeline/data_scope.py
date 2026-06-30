@@ -116,6 +116,26 @@ class DataScope:
     def permits_source(self, version: str) -> bool:
         return self.enabled and version in self.allowed_sources
 
+    def permits_output_field(self, entity: str, field: str) -> bool:
+        """Row-level OUTPUT gate for a single (entity, field). Used when shaping
+        governed student-level rows for the DATA_RESULT:
+          - denied_fields ALWAYS win (explicit 'entity.field', bare 'field', or
+            an 'entity.*' wildcard) → never emitted;
+          - an IDENTIFYING field (names, student_number, dob, address, guardian/
+            contact, …) is emitted ONLY if the profile explicitly permits it via
+            allowed_student_fields (T3 — student-level does not auto-grant every
+            identifier);
+          - any other non-denied field is emitted.
+        This is independent of student_level_allowed (the caller gates rows on
+        that first); here we decide per-COLUMN which permitted fields survive."""
+        qualified = f"{entity}.{field}"
+        for d in self.denied_fields:
+            if d == qualified or d == field or (d.endswith(".*") and d[:-2] == entity):
+                return False
+        if field in DEFAULT_IDENTIFYING_FIELDS:
+            return qualified in self.allowed_student_fields or field in self.allowed_student_fields
+        return True
+
     # ---- derivation -------------------------------------------------------
 
     def build_scope_config(self, source_model) -> ScopeConfig:

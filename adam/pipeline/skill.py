@@ -381,6 +381,83 @@ def run_objective(
 #     the fact/judgment line visible at a glance (separate typed fields).
 # ===========================================================================
 
+# Row/list intent: phrases that ask for INDIVIDUAL students (a roster), as
+# opposed to aggregate/summary phrasing. Detected on the original objective; when
+# no row phrase matches we stay aggregate-only (the safer default).
+_ROW_INTENT_PHRASES = (
+    "list", "roster", "which students", "who are the students", "show students",
+    "show me the students", "names of", "name of each", "individual students",
+    "each student", "students who", "students with",
+)
+
+
+def _is_row_intent(objective: str) -> bool:
+    o = (objective or "").lower()
+    return any(p in o for p in _ROW_INTENT_PHRASES)
+
+
+def _governed_rows(objective, qr, plan, data_scope, model):
+    """Governed ROW-LEVEL output for list/roster objectives. Returns a single
+    {"label":"rows","value":{columns, rows}} observation, or None.
+
+    Authority is the DataScope: rows are emitted ONLY when the profile permits
+    student-level detail AND the objective asks for individual students. Output
+    columns are mapped back to their SOURCE field via the PLAN (never the display
+    name): a projection column is kept only if permits_output_field allows it; a
+    computed aggregation alias is kept unless the alias itself is denied; an
+    unmapped column is excluded. Rows are capped at max_rows_returned. These rows
+    NEVER enter the interpretation prompt — they go only into the result."""
+    if data_scope is None or not getattr(data_scope, "student_level_allowed", False):
+        return None
+    if not _is_row_intent(objective):
+        return None
+    if not isinstance(plan.body, QueryBody):
+        return None
+    body = plan.body
+    alias_set = {a.as_ for a in body.aggregations}
+    # Reconstruct the output-column order EXACTLY as the translator built SELECT:
+    # projection items (excluding alias refs), then aggregation aliases.
+    plan_cols = []
+    for p in body.projection:
+        if p in alias_set:
+            continue
+        plan_cols.append(("projection", p))
+    for a in body.aggregations:
+        plan_cols.append(("aggregation", a.as_))
+    cols = list(qr.columns)
+    if len(plan_cols) != len(cols):
+        return None  # cannot safely map columns -> emit nothing (conservative)
+
+    keep_idx, keep_names = [], []
+    for i, (kind, ref) in enumerate(plan_cols):
+        if kind == "aggregation":
+            # A computed aggregate alias is allowed unless the alias is denied;
+            # its underlying field already passed the Sentinel denylist.
+            if ref not in data_scope.denied_fields:
+                keep_idx.append(i)
+                keep_names.append(cols[i])
+        else:
+            resolved = model.resolve(ref, body.entities) if model is not None else None
+            if resolved is None:
+                continue  # unmapped projection ref -> exclude
+            entity, fieldname = resolved
+            if data_scope.permits_output_field(entity, fieldname):
+                keep_idx.append(i)
+                keep_names.append(cols[i])
+    if not keep_idx:
+        return None
+
+    cap = getattr(data_scope, "max_rows_returned", None)
+    rows_src = qr.rows[:cap] if isinstance(cap, int) and cap > 0 else list(qr.rows)
+    out_rows = [[row[i] for i in keep_idx] for row in rows_src]
+    return {
+        "label": "rows",
+        "value": {"columns": keep_names, "rows": out_rows},
+        "detail": f"{len(out_rows)} row(s); governed student-level output "
+                  f"(permitted columns only, capped at max_rows_returned).",
+    }
+
+
 @dataclass
 class Observation:
     """A single machine-derived fact about THIS result set. Runtime-owned."""
@@ -565,6 +642,7 @@ def analyze_objective(
     governance: Any = None,
     scope: Any = None,
     max_rows: Optional[int] = None,
+    data_scope: Any = None,
 ) -> SkillResult:
     """Objective → governed plan → execute → runtime observations → model
     interpretation → assembled SkillResult. Honest on denial/empty/failure:
@@ -654,9 +732,18 @@ def analyze_objective(
     limitations = ["Synthetic data; results are illustrative, not authoritative."]
     limitations.extend(interp["limitations"])
 
+    # Governed ROW-LEVEL output (list/roster objectives, profile-permitted only).
+    # ADDITIVE: keep the aggregate observations; append a scoped `rows` entry to
+    # the RESULT only — it was NOT in the observations the model interpreted, so
+    # the "model never sees raw rows" privacy rule stays intact.
+    result_observations = observations
+    rows_obs = _governed_rows(objective, qr, plan, data_scope, source_model)
+    if rows_obs is not None:
+        result_observations = observations + [rows_obs]
+
     return SkillResult(
         objective=objective, status="ok", data_analyzed=data_analyzed,
-        observations=observations,
+        observations=result_observations,
         inferences=interp["inferences"],
         recommendations=interp["recommendations"],
         assumptions=interp["assumptions"],
