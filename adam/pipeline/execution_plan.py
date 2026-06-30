@@ -85,6 +85,20 @@ class Order:
 
 
 @dataclass(frozen=True)
+class Having:
+    """Post-aggregation filter (SQL HAVING). Alias-based (canonical v1): `field`
+    is an aggregation OUTPUT alias (one of aggregations[].as), NOT an
+    entity.field — so the HAVING filters exactly the aggregate that appears in
+    the SELECT. `value` is a numeric threshold, bound as a parameter."""
+    field: str          # aggregation alias (aggregations[].as)
+    op: str             # numeric comparison: gt|gte|lt|lte|eq|ne
+    value: Any          # numeric threshold
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"field": self.field, "op": self.op, "value": self.value}
+
+
+@dataclass(frozen=True)
 class QueryBody:
     """Canonical structured body for intent_type=query (closed model)."""
     operation: str
@@ -95,6 +109,7 @@ class QueryBody:
     group_by: Tuple[str, ...] = ()
     aggregations: Tuple[Aggregation, ...] = ()
     order_by: Tuple[Order, ...] = ()
+    having: Tuple[Having, ...] = ()
     limit: Optional[int] = None
 
     @classmethod
@@ -115,6 +130,7 @@ class QueryBody:
                 for a in (d.get("aggregations") or [])
             ),
             order_by=tuple(Order(**o) for o in (d.get("order_by") or [])),
+            having=tuple(Having(**h) for h in (d.get("having") or [])),
             limit=d.get("limit"),
         )
 
@@ -131,6 +147,7 @@ class QueryBody:
             "group_by": list(self.group_by),
             "aggregations": [a.to_dict() for a in self.aggregations],
             "order_by": [o.to_dict() for o in self.order_by],
+            "having": [h.to_dict() for h in self.having],
             "limit": self.limit,
         }
 

@@ -109,6 +109,7 @@ def build_system_prompt(source_model: SourceModel) -> str:
         '  {"operation": "select", "entities": [..], "projection": [..], '
         '"filters": [{"field","op","value"}], "joins": [{"left","right","type"}], '
         '"group_by": [..], "aggregations": [{"fn","field","as"}], '
+        '"having": [{"field","op","value"}], '
         '"order_by": [{"field","direction"}], "limit": <int>}'
     )
     lines.append("")
@@ -146,6 +147,25 @@ def build_system_prompt(source_model: SourceModel) -> str:
         'use {"field":"student_count","direction":"desc"}.'
     )
     lines.append("")
+    lines.append("Filtering on an AGGREGATE (HAVING):")
+    lines.append(
+        "  - To filter on an AGGREGATE (e.g. 'students with MORE THAN 5 absences', "
+        "'schools with AT LEAST 100 students', 'fewer than N of X'), use 'having', "
+        "NOT 'filters'. 'filters' apply to raw rows BEFORE grouping; 'having' "
+        "applies to the aggregate AFTER grouping."
+    )
+    lines.append(
+        "  - having[].field MUST be an aggregation alias declared in this plan's "
+        "aggregations[].as (NOT an entity.field). So such an objective REQUIRES "
+        "group_by + an aggregation (with an 'as' alias) + a having entry that "
+        "references that alias, and usually order_by on the same alias."
+    )
+    lines.append(
+        "  - When the objective says 'most/top/more than N/at least N/fewer than N "
+        "of <thing>', aggregate that <thing> and use having/order_by on the "
+        "aggregate alias — NEVER order by an unrelated column like id."
+    )
+    lines.append("")
     lines.append("Closed value sets (use EXACTLY these tokens, lowercase):")
     lines.append(
         "  - filters[].op: eq, ne, lt, lte, gt, gte, in, not_in, between, like, "
@@ -153,6 +173,7 @@ def build_system_prompt(source_model: SourceModel) -> str:
     )
     lines.append("  - joins[].type: inner, left, right, full")
     lines.append("  - aggregations[].fn: count, sum, avg, min, max")
+    lines.append("  - having[].op: eq, ne, lt, lte, gt, gte")
     lines.append("  - order_by[].direction: asc, desc")
     lines.append("")
     lines.append("Limit:")
@@ -166,6 +187,19 @@ def build_system_prompt(source_model: SourceModel) -> str:
         '"group_by":["schools.name"],'
         '"aggregations":[{"fn":"count","field":"students.id","as":"student_count"}],'
         '"order_by":[{"field":"student_count","direction":"desc"}],"limit":10}'
+    )
+    lines.append(
+        "Aggregate-threshold example ('students with more than 5 absences, ordered "
+        "by absences' — group per student, count, then HAVING on the count alias):"
+    )
+    lines.append(
+        '  {"operation":"select","entities":["students","attendance"],'
+        '"projection":["students.id","students.name"],'
+        '"joins":[{"left":"students.id","right":"attendance.student_id","type":"inner"}],'
+        '"group_by":["students.id","students.name"],'
+        '"aggregations":[{"fn":"count","field":"attendance.id","as":"total_absences"}],'
+        '"having":[{"field":"total_absences","op":"gt","value":5}],'
+        '"order_by":[{"field":"total_absences","direction":"desc"}],"limit":100}'
     )
     return "\n".join(lines)
 

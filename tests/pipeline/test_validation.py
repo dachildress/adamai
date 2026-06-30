@@ -160,6 +160,72 @@ def test_join_capability():
     check("join rejected when supports_join=false", out.category == CAPABILITY_ERROR, str(out))
 
 
+def test_having_alias_based():
+    # fix_having: a well-formed alias-based HAVING is accepted. base_plan has
+    # aggregations [avg ... as avg_rate], so HAVING on avg_rate is valid.
+    d = base_plan_dict()
+    d["body"]["having"] = [{"field": "avg_rate", "op": "gt", "value": 0.5}]
+    out = v(d)
+    check("well-formed alias HAVING accepted", out.ok, f"{out.category}: {out.detail}")
+
+
+def test_having_requires_aggregation():
+    d = base_plan_dict()
+    d["body"]["aggregations"] = []
+    d["body"]["group_by"] = []
+    d["body"]["order_by"] = []
+    d["body"]["projection"] = ["schools.name"]
+    d["body"]["having"] = [{"field": "avg_rate", "op": "gt", "value": 5}]
+    out = v(d)
+    check("HAVING without aggregation rejected",
+          not out.ok and out.category == VALIDATION_ERROR and "having requires" in (out.detail or ""),
+          str(out))
+
+
+def test_having_unknown_alias_rejected():
+    d = base_plan_dict()
+    d["body"]["having"] = [{"field": "not_an_alias", "op": "gt", "value": 5}]
+    out = v(d)
+    check("HAVING on unknown aggregation alias rejected",
+          not out.ok and out.category == VALIDATION_ERROR and "unknown aggregation alias" in (out.detail or ""),
+          str(out))
+
+
+def test_having_bad_op_and_value_rejected():
+    d = base_plan_dict()
+    d["body"]["having"] = [{"field": "avg_rate", "op": "like", "value": 5}]
+    out = v(d)
+    check("HAVING with non-numeric op rejected",
+          not out.ok and out.category == VALIDATION_ERROR and "having op" in (out.detail or ""), str(out))
+    d2 = base_plan_dict()
+    d2["body"]["having"] = [{"field": "avg_rate", "op": "gt", "value": "five"}]
+    out2 = v(d2)
+    check("HAVING with non-numeric value rejected",
+          not out2.ok and out2.category == VALIDATION_ERROR and "numeric" in (out2.detail or ""), str(out2))
+
+
+def test_having_denied_field_blocked_via_aggregation():
+    # A HAVING references an alias; the underlying aggregation field is what the
+    # scope denylist sees. Aggregating a denied field is blocked at Sentinel —
+    # HAVING cannot reach a denied field the aggregation didn't already expose.
+    from adam.pipeline.sentinel import evaluate, GovernanceConfig, ScopeConfig, POLICY_DENIED
+    d = base_plan_dict()
+    d["body"]["aggregations"] = [{"fn": "count", "field": "students.ssn", "as": "n"}]
+    d["body"]["entities"] = ["students"]
+    d["body"]["projection"] = ["students.name"]
+    d["body"]["filters"] = []
+    d["body"]["joins"] = []
+    d["body"]["group_by"] = ["students.name"]
+    d["body"]["order_by"] = []
+    d["body"]["having"] = [{"field": "n", "op": "gt", "value": 5}]
+    plan = ExecutionPlan.from_dict(d)
+    scope = ScopeConfig(allowed_entities={"students"}, denied_entities=set(),
+                        denied_fields={"students.ssn"})
+    out = evaluate(plan, GovernanceConfig(read_only=True), scope)
+    check("HAVING over a denied aggregation field is blocked at Sentinel",
+          out.disposition == POLICY_DENIED, str(out))
+
+
 def test_closed_enum_rejections_unchanged_with_hint():
     # fix_sql: enum rejections now append the allowed set (message-only). What is
     # accepted is unchanged: an out-of-set token / wrong case is still rejected.
@@ -271,6 +337,11 @@ def main():
         test_unresolved_entity,
         test_unresolved_field,
         test_join_capability,
+        test_having_alias_based,
+        test_having_requires_aggregation,
+        test_having_unknown_alias_rejected,
+        test_having_bad_op_and_value_rejected,
+        test_having_denied_field_blocked_via_aggregation,
         test_closed_enum_rejections_unchanged_with_hint,
         test_bare_entity_join_key_still_rejected,
         test_credential_detection,

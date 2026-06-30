@@ -354,6 +354,20 @@ class MySQLAdapter(Adapter):
             cols = ", ".join(self._q_col(g, entities) for g in body.group_by)
             group_sql = f" GROUP BY {cols}"
 
+        # HAVING (post-aggregation filter, alias-based). The alias is quoted with
+        # the SAME _q_alias helper ORDER BY uses (MySQL allows HAVING to reference
+        # a SELECT alias); the threshold is a BOUND parameter, never inlined.
+        having_sql = ""
+        if body.having:
+            hparts = []
+            for h in body.having:
+                op_sql = _BINARY_OPS.get(h.op)
+                if op_sql is None:
+                    raise TranslationError(f"unsupported having op: {h.op!r}")
+                hparts.append(f"{self._q_alias(h.field)} {op_sql} {_PLACEHOLDER}")
+                params.append(h.value)
+            having_sql = f" HAVING {' AND '.join(hparts)}"
+
         order_sql = ""
         if body.order_by:
             parts = []
@@ -365,5 +379,5 @@ class MySQLAdapter(Adapter):
 
         limit_sql = f" LIMIT {int(body.limit)}"   # validated positive int; safe to inline
 
-        sql = f"SELECT {', '.join(select_parts)} {from_sql}{where_sql}{group_sql}{order_sql}{limit_sql}"
+        sql = f"SELECT {', '.join(select_parts)} {from_sql}{where_sql}{group_sql}{having_sql}{order_sql}{limit_sql}"
         return TranslatedQuery(sql=sql, params=params)
