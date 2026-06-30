@@ -59,7 +59,24 @@
       "description": "K-12 deployments. Human review for public-facing artifacts; FERPA/COPPA-aware bounds.",
       "policy_bounds_id": "education_safe",
       "human_review_mode": "conditional",
-      "review_required_for": ["public_facing_artifact", "student_data_output"]
+      "review_required_for": ["public_facing_artifact", "student_data_output"],
+      "data_intelligence": {
+        "_comment": "Agent Data Intelligence scope (read-only). Seeker/Truthseeker may query the listed ratified sources; aggregate-only by default; denied_fields are always unreachable (enforced at the pipeline Sentinel, not the planner). Budgets bound queries per deliberation.",
+        "enabled": true,
+        "allowed_sources": ["adam-test-mysql-v1"],
+        "default_detail_level": "aggregate",
+        "student_level_allowed": false,
+        "denied_fields": [
+          "students.first_name", "students.last_name", "students.student_number", "students.dob",
+          "students.street", "students.city", "students.zip",
+          "guardians.*", "guardian_emails.*", "guardian_phones.*"
+        ],
+        "budgets": {
+          "max_data_queries_per_session": 5,
+          "max_data_queries_per_agent": 3,
+          "max_rows_returned": 100
+        }
+      }
     },
     "external_action_restricted": {
       "id": "external_action_restricted",

@@ -62,6 +62,16 @@ class ScopeConfig:
     allowed_entities: Set[str] = field(default_factory=set)
     denied_entities: Set[str] = field(default_factory=set)
     denied_fields: Set[str] = field(default_factory=set)
+    # Detail-level gate (agent Data Intelligence). When aggregate_only is True a
+    # plan must be aggregate-shaped: no identifying field in projection/group_by,
+    # and no unaggregated rows from a row-level entity. Defaults keep every
+    # existing caller (the web query path) unchanged.
+    aggregate_only: bool = False
+    # Fields that mark a plan as identifying/student-level if projected or
+    # grouped under aggregate_only (denied_fields are ALSO treated as identifying).
+    identifying_fields: Set[str] = field(default_factory=set)
+    # Entities whose UNAGGREGATED rows count as student-level (e.g. {"students"}).
+    student_entities: Set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -190,6 +200,36 @@ def _predicate_field_denylist(body: QueryBody, scope: ScopeConfig) -> Optional[S
     return None
 
 
+def _predicate_detail_level(body: QueryBody, scope: ScopeConfig) -> Optional[SentinelOutcome]:
+    """Aggregate-only enforcement (v1 rule). When scope.aggregate_only is set,
+    a plan is STUDENT-LEVEL (denied) if EITHER:
+      - it projects or group_by's an identifying field (in identifying_fields or
+        denied_fields), OR
+      - it returns rows from a student-row entity WITHOUT any aggregation
+        (aggregations empty while a student_entity is queried).
+    Aggregate plans (>=1 aggregation, grouping only by non-identifying dims) pass.
+    Authoritative server-side gate — independent of what the planner emitted."""
+    if not scope.aggregate_only:
+        return None
+    marked = set(scope.identifying_fields) | set(scope.denied_fields)
+    if marked:
+        for ref in list(body.projection) + list(body.group_by):
+            bare = ref.split(".")[-1]
+            if ref in marked or bare in marked:
+                return _denied(
+                    f"Aggregate-only scope: identifying field {ref} is not permitted "
+                    f"in projection/group_by"
+                )
+    if scope.student_entities and not body.aggregations:
+        for entity in body.entities:
+            if entity in scope.student_entities:
+                return _denied(
+                    f"Aggregate-only scope: unaggregated rows from {entity} are not "
+                    f"permitted (use an aggregation/group_by)"
+                )
+    return None
+
+
 def _predicate_cost(
     gov: GovernanceConfig,
     cost: Optional[AdapterCostEstimate],
@@ -250,6 +290,11 @@ def evaluate(
 
     # 3. field denylist
     out = _predicate_field_denylist(body, scope)
+    if out is not None:
+        return out
+
+    # 3b. detail level (aggregate-only gate)
+    out = _predicate_detail_level(body, scope)
     if out is not None:
         return out
 

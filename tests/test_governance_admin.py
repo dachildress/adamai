@@ -396,6 +396,36 @@ def test_admin_api_endpoints():
         check("patch unknown profile 400", r_patch_bad.status_code == 400)
 
 
+def test_education_profile_carries_data_intelligence_block():
+    # Agent Data Intelligence (Phase 4): the shipped education profile carries a
+    # data_intelligence block that resolves to an enabled, aggregate-only scope;
+    # general has none (disabled); and the block doesn't break validation.
+    sys.path.insert(0, str(ROOT))
+    from backend import governance
+    from adam.pipeline import DataScope
+    governance.init_governance(GUI_ROOT)
+
+    block = governance.get_profile("education").get("data_intelligence")
+    check("education profile has a data_intelligence block",
+          isinstance(block, dict) and block.get("enabled") is True, str(block))
+    ds = DataScope.from_block(block)
+    check("block -> enabled DataScope", ds.enabled is True)
+    check("allows the sample source", ds.permits_source("adam-test-mysql-v1"))
+    check("aggregate-only by default", ds.aggregate_only is True)
+    check("denies student PII + guardian wildcard",
+          "students.first_name" in ds.denied_fields and "guardians.*" in ds.denied_fields)
+
+    gen = governance.get_profile("general")
+    check("general profile has no data_intelligence block", "data_intelligence" not in gen)
+    check("general -> disabled DataScope",
+          DataScope.from_block(gen.get("data_intelligence")).enabled is False)
+
+    data = json.loads((GUI_ROOT / "governance.json").read_text(encoding="utf-8"))
+    result = governance.validate_governance_data(data, SKILLS)
+    check("governance.json with data_intelligence still validates",
+          result["valid"] is True, str(result.get("errors")))
+
+
 def main():
     print("test_governance_admin.py")
     print("=" * 60)
@@ -410,6 +440,7 @@ def main():
     test_save_rejects_invalid()
     test_user_governance_assignment()
     test_admin_api_endpoints()
+    test_education_profile_carries_data_intelligence_block()
     print("=" * 60)
     print(f"Results: {PASSED} passed, {FAILED} failed, {SKIPPED} skipped")
     return 0 if FAILED == 0 else 1

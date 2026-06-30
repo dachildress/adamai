@@ -662,6 +662,18 @@ def spawn_adam_session(
         # permissive gate (governance off) -- never block spawning.
         pass
 
+    # Agent Data Intelligence: write the profile's resolved data_intelligence
+    # block into the session dir so the in-deliberation skill handler can read
+    # it (the single injection point: profile -> session scope.json -> handler).
+    # Fail-closed: absent/unresolvable block -> {} -> the skill is disabled for
+    # the session. Never block spawning on this.
+    try:
+        from adam.pipeline.data_scope import write_session_scope
+        _di_block = governance.get_profile(resolved_profile_id).get("data_intelligence")
+        write_session_scope(session_dir, _di_block if isinstance(_di_block, dict) else {})
+    except Exception:
+        pass
+
     # Slice 4a: resumed-after-review sessions skip deliberation and route
     # straight to Operator (the synthesis is already settled and composed
     # into the seed).

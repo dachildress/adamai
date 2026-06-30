@@ -34,6 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from adam.pipeline import (  # noqa: E402
+    DataScope,
     GovernanceConfig,
     IngestionStore,
     MySQLAdapter,
@@ -334,11 +335,17 @@ def run_governed_query(
     user: Dict[str, Any],
     model_fns: Optional[ModelFns],
     resolve_connection: ConnectionResolver,
+    data_scope: Optional[DataScope] = None,
 ) -> Dict[str, Any]:
     """Reload the canonical store (re-registers ratified models), resolve the
     source model + read-only connection + model seams, then run the EXISTING
     analyze_objective skill flow. Returns a discriminated dict — never raises
-    for a config/blocked outcome (the caller maps unknown-version to 404)."""
+    for a config/blocked outcome (the caller maps unknown-version to 404).
+
+    When ``data_scope`` is provided (the agent path), the profile-derived
+    ScopeConfig (denied_fields + aggregate-only detail gate) governs the query
+    via the SAME Sentinel path. The web route passes no data_scope and keeps the
+    source-model-only scope — behavior unchanged."""
     # Reload-before-query: constructing the canonical store re-registers
     # ratified models from disk into the process registry.
     get_pipeline_ingestion_store()
@@ -364,6 +371,13 @@ def run_governed_query(
     # supplied credentials — they were resolved from the named handle.
     adapter = MySQLAdapter(model, connect_fn=connect_fn)
     governance, scope = pipeline_governance_for(user, model)
+    max_rows = None
+    if data_scope is not None:
+        # Profile-derived scope (agent path): denied_fields + aggregate-only
+        # detail gate, enforced by the SAME Sentinel the web path uses. The row
+        # budget clamps the effective plan limit (min), never raising it.
+        scope = data_scope.build_scope_config(model)
+        max_rows = data_scope.max_rows_returned
 
     try:
         result: SkillResult = analyze_objective(
@@ -376,6 +390,7 @@ def run_governed_query(
             adapter=adapter,
             governance=governance,
             scope=scope,
+            max_rows=max_rows,
         )
     except Exception:
         # A genuine model/execution failure (e.g. a provider error after

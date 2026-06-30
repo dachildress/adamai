@@ -16,7 +16,7 @@ PROJ_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJ_ROOT))
 
 from adam.pipeline import (  # noqa: E402
-    SYNTHETIC_SCHOOL_V1, create_synthetic_db, run_objective,
+    SYNTHETIC_SCHOOL_V1, create_synthetic_db, run_objective, analyze_objective,
     GovernanceConfig, ScopeConfig,
     SOURCE_MODEL_ERROR, VALIDATION_ERROR, POLICY_DENIED,
 )
@@ -115,6 +115,31 @@ def test_parse_error_never_reaches_pipeline():
     check("pipeline never ran", res.pipeline is None)
 
 
+def test_max_rows_clamps_effective_limit():
+    # agent Data Intelligence: max_rows CLAMPS the plan's limit down (min), never
+    # raising it. 3 schools exist; a plan with limit=50 + max_rows=1 returns 1.
+    conn = create_synthetic_db()
+    body = ('{"operation":"select","entities":["schools"],'
+            '"projection":["schools.name"],"limit":50}')
+    interp = ('{"inferences":[],"recommendations":[],"assumptions":[],'
+              '"limitations":[],"confidence":"low","confidence_rationale":"x"}')
+    res = analyze_objective(
+        "list schools", connection=conn, source_model=SYNTHETIC_SCHOOL_V1,
+        planning_model_fn=fake(body), interpretation_model_fn=fake(interp),
+        connection_handle="conn_school_ro", max_rows=1,
+    )
+    check("clamped query executed ok", res.status in ("ok", "empty"), str(res))
+    check("effective limit clamped to 1 row (not 3)", res.data_analyzed.get("row_count") == 1,
+          str(res.data_analyzed))
+    # Without the clamp, the same plan returns all 3.
+    res2 = analyze_objective(
+        "list schools", connection=create_synthetic_db(), source_model=SYNTHETIC_SCHOOL_V1,
+        planning_model_fn=fake(body), interpretation_model_fn=fake(interp),
+        connection_handle="conn_school_ro",
+    )
+    check("unclamped returns all 3 rows", res2.data_analyzed.get("row_count") == 3, str(res2.data_analyzed))
+
+
 def test_core_stays_model_free():
     # Importing the pipeline (incl. skill) must not pull in adam.core; the
     # governed core is deterministic and model-free.
@@ -140,6 +165,7 @@ def main():
         test_select_star_caught_by_validation,
         test_out_of_scope_caught_by_sentinel,
         test_parse_error_never_reaches_pipeline,
+        test_max_rows_clamps_effective_limit,
         test_core_stays_model_free,
     ]:
         print(f"\n{t.__name__}:")
