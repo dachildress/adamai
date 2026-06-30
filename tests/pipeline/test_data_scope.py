@@ -145,6 +145,23 @@ def test_derived_scope_enforced_by_sentinel():
     check("clean aggregate plan allowed", out.disposition == ALLOWED, str(out))
 
 
+def test_permits_output_field_row_gate():
+    # Row-output column gate (T2/T3). denied always wins; identifiers need
+    # explicit allowance; other non-denied fields pass.
+    ds = DataScope.from_block({
+        "enabled": True, "allowed_sources": ["v1"], "student_level_allowed": True,
+        "allowed_student_fields": ["students.name"],
+        "denied_fields": ["students.dob", "guardians.*", "ssn"],
+    })
+    check("denied qualified field stripped", ds.permits_output_field("students", "dob") is False)
+    check("denied bare field stripped (any entity)", ds.permits_output_field("students", "ssn") is False)
+    check("wildcard-denied entity field stripped", ds.permits_output_field("guardians", "email") is False)
+    check("permitted identifier kept", ds.permits_output_field("students", "name") is True)
+    check("identifier WITHOUT allowance stripped", ds.permits_output_field("students", "first_name") is False)
+    check("non-identifying, non-denied field kept", ds.permits_output_field("students", "grade_level") is True)
+    check("non-identifying id kept", ds.permits_output_field("students", "id") is True)
+
+
 def test_session_scope_file_roundtrip():
     # The GUI spawn writes the profile block here; the skill handler reads it.
     with tempfile.TemporaryDirectory() as raw:
@@ -175,6 +192,7 @@ def main():
         test_budget_defaults_when_missing,
         test_build_scope_config_denylist_and_wildcard,
         test_derived_scope_enforced_by_sentinel,
+        test_permits_output_field_row_gate,
         test_session_scope_file_roundtrip,
     ]:
         print(f"\n{t.__name__}:")

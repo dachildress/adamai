@@ -140,6 +140,84 @@ def test_max_rows_clamps_effective_limit():
     check("unclamped returns all 3 rows", res2.data_analyzed.get("row_count") == 3, str(res2.data_analyzed))
 
 
+ROSTER_BODY = ('{"operation":"select","entities":["students"],'
+               '"projection":["students.id","students.name","students.grade_level"],"limit":10}')
+INTERP_JSON = ('{"inferences":[],"recommendations":[],"assumptions":[],'
+               '"limitations":[],"confidence":"low","confidence_rationale":"x"}')
+
+
+def _student_scope(**over):
+    from adam.pipeline import DataScope
+    block = {"enabled": True, "allowed_sources": ["x"], "student_level_allowed": True,
+             "allowed_student_fields": ["students.name"],
+             "denied_fields": ["students.grade_level"], "budgets": {"max_rows_returned": 2}}
+    block.update(over)
+    return DataScope.from_block(block)
+
+
+def _analyze(objective, data_scope, interp_fn=None):
+    return analyze_objective(
+        objective, connection=create_synthetic_db(), source_model=SYNTHETIC_SCHOOL_V1,
+        planning_model_fn=fake(ROSTER_BODY),
+        interpretation_model_fn=interp_fn or fake(INTERP_JSON),
+        connection_handle="c", data_scope=data_scope)
+
+
+def _rows(res):
+    r = [o for o in res.observations if o["label"] == "rows"]
+    return r[0]["value"] if r else None
+
+
+def test_governed_rows_for_roster_under_student_level():
+    res = _analyze("list the students", _student_scope())
+    check("status ok", res.status == "ok", str(res.status))
+    v = _rows(res)
+    check("rows observation emitted", v is not None)
+    check("permitted identifier (name) kept", "name" in v["columns"], str(v["columns"]))
+    check("non-identifying id kept", "id" in v["columns"], str(v["columns"]))
+    check("denied grade_level stripped", "grade_level" not in v["columns"], str(v["columns"]))
+    check("capped at max_rows_returned (2)", len(v["rows"]) == 2, str(len(v["rows"])))
+    # aggregate observations still present (additive).
+    check("aggregate observations retained", any(o["label"] == "rows_returned" for o in res.observations))
+
+
+def test_no_rows_when_student_level_denied():
+    res = _analyze("list the students", _student_scope(student_level_allowed=False))
+    check("no rows when student_level not allowed", _rows(res) is None)
+
+
+def test_no_rows_for_aggregate_objective():
+    res = _analyze("how many students are enrolled", _student_scope())
+    check("aggregate-phrased objective emits no rows", _rows(res) is None)
+
+
+def test_no_rows_without_data_scope():
+    # The web path passes no DataScope -> never emits rows.
+    res = _analyze("list the students", None)
+    check("no rows without a DataScope (web path)", _rows(res) is None)
+
+
+def test_identifier_stripped_without_explicit_permission():
+    res = _analyze("list the students", _student_scope(allowed_student_fields=[]))
+    v = _rows(res)
+    check("rows still emitted", v is not None)
+    check("identifier name stripped without allowance", "name" not in v["columns"], str(v["columns"]))
+    check("non-identifying id still kept", "id" in v["columns"], str(v["columns"]))
+
+
+def test_rows_never_enter_interpretation_prompt():
+    captured = {}
+    def recording_interp(system_prompt, observations_json):
+        captured["payload"] = observations_json
+        return INTERP_JSON
+    res = _analyze("list the students", _student_scope(), interp_fn=recording_interp)
+    check("rows still in the result", _rows(res) is not None)
+    payload = captured.get("payload", "")
+    check("interpretation payload carries observations", "rows_returned" in payload)
+    check("interpretation payload does NOT contain the rows observation",
+          '"rows"' not in payload and "Ann" not in payload, payload[:200])
+
+
 def test_core_stays_model_free():
     # Importing the pipeline (incl. skill) must not pull in adam.core; the
     # governed core is deterministic and model-free.
@@ -166,6 +244,12 @@ def main():
         test_out_of_scope_caught_by_sentinel,
         test_parse_error_never_reaches_pipeline,
         test_max_rows_clamps_effective_limit,
+        test_governed_rows_for_roster_under_student_level,
+        test_no_rows_when_student_level_denied,
+        test_no_rows_for_aggregate_objective,
+        test_no_rows_without_data_scope,
+        test_identifier_stripped_without_explicit_permission,
+        test_rows_never_enter_interpretation_prompt,
         test_core_stays_model_free,
     ]:
         print(f"\n{t.__name__}:")

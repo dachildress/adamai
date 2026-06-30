@@ -426,6 +426,7 @@ def run_governed_query(
             governance=governance,
             scope=scope,
             max_rows=max_rows,
+            data_scope=data_scope,
         )
     except Exception as e:
         # A genuine model/execution failure (e.g. a provider error after
