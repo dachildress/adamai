@@ -141,6 +141,9 @@ class ConnectionProfile:
 _STORE_PATH: Optional[Path] = None
 _STORE_LOCK = threading.Lock()
 
+# Canonical install root (= /opt/adam), for lazy init in non-web processes.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def init_connection_store(base_dir) -> None:
     """Set the canonical connection-store path (mirrors init_data_sources)."""
@@ -221,8 +224,11 @@ class ConnectionProfileStore:
 
 
 def get_connection_store() -> ConnectionProfileStore:
+    # Lazy init for processes that didn't run build_app (e.g. the deliberation
+    # subprocess invoking the data_intelligence skill). Idempotent — a no-op when
+    # already initialized by the web path's explicit init_connection_store.
     if _STORE_PATH is None:
-        raise RuntimeError("connection store not initialized (call init_connection_store)")
+        init_connection_store(_REPO_ROOT)
     return ConnectionProfileStore(_STORE_PATH)
 
 

@@ -184,6 +184,25 @@ def test_delete_removes_only_the_profile():
         check("deleting an unknown handle returns False", missing is False)
 
 
+def test_connection_store_lazy_init_no_build_app():
+    # The deliberation subprocess never runs build_app, so get_connection_store
+    # must self-initialize from the repo root instead of raising. Idempotent.
+    saved = dsc._STORE_PATH
+    try:
+        dsc._STORE_PATH = None
+        store = dsc.get_connection_store()  # must NOT raise
+        check("lazy-init sets the connection store path",
+              dsc._STORE_PATH is not None and str(dsc._STORE_PATH).endswith("source_connections.json"))
+        check("returns a ConnectionProfileStore", store is not None)
+        # Explicit init (web path) is not overridden by the lazy guard.
+        dsc.init_connection_store("/tmp/some-deploy-dir")
+        before = dsc._STORE_PATH
+        dsc.get_connection_store()
+        check("explicit init preserved (lazy-init no-ops when set)", dsc._STORE_PATH == before)
+    finally:
+        dsc._STORE_PATH = saved
+
+
 def main():
     print("Data-source connection store tests")
     print("=" * 60)
@@ -195,6 +214,7 @@ def main():
         test_invalid_key_fails_safe,
         test_tampered_token_fails_clean,
         test_delete_removes_only_the_profile,
+        test_connection_store_lazy_init_no_build_app,
     ]:
         print(f"\n{t.__name__}:")
         t()
