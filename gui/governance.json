@@ -19,8 +19,8 @@
     "education_safe": {
       "id": "education_safe",
       "name": "Education Safe (FERPA/COPPA-aware)",
-      "description": "K-12 bounds. Artifacts allowed; external sends blocked; student-data and public-facing output gated for review.",
-      "allowed_skills": ["document", "slidedeck", "websearch"],
+      "description": "K-12 bounds. Artifacts allowed; external sends blocked; student-data and public-facing output gated for review. Governed read-only Data Intelligence is permitted (the data_intelligence handler further gates it by the profile's data_intelligence block: sources, denied fields, aggregate-only, budgets).",
+      "allowed_skills": ["document", "slidedeck", "websearch", "data_intelligence"],
       "blocked_skills": ["email", "coder"],
       "allowed_artifact_types": ["document", "slidedeck"],
       "external_actions_allowed": false,

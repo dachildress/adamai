@@ -43,6 +43,9 @@ FILTER_OPS = {"eq", "ne", "lt", "lte", "gt", "gte", "in", "not_in",
 JOIN_TYPES = {"inner", "left", "right", "full"}
 AGG_FNS = {"count", "sum", "avg", "min", "max"}
 ORDER_DIRECTIONS = {"asc", "desc"}
+# HAVING (post-aggregation filter) uses the NUMERIC comparison subset of
+# FILTER_OPS — no in/like/null on an aggregate threshold. Not a new set, a subset.
+HAVING_OPS = {"eq", "ne", "lt", "lte", "gt", "gte"}
 
 
 def _allowed(values) -> str:
@@ -303,6 +306,27 @@ def validate(
             hint = "" if (isinstance(ref, str) and "." in ref) else \
                 " (expected entity.field, e.g. students.school_id)"
             return _err(SOURCE_MODEL_ERROR, f"unresolved field reference in {loc}: {ref!r}{hint}")
+
+    # 11b. HAVING (post-aggregation filter, alias-based). Filters an aggregation
+    #      OUTPUT alias, so it requires an aggregation to exist; the threshold op
+    #      is the numeric subset; the value is numeric; and the alias must be one
+    #      declared in this plan's aggregations. (A denied underlying field is
+    #      already blocked via the aggregation's field at the Sentinel denylist —
+    #      HAVING references the alias, never a raw field, so it can't reach one.)
+    if body.having:
+        if not body.aggregations:
+            return _err(VALIDATION_ERROR,
+                        "having requires an aggregation (and group_by for per-group thresholds)")
+        for h in body.having:
+            if h.op not in HAVING_OPS:
+                return _err(VALIDATION_ERROR,
+                            f"unknown having op: {h.op!r} (allowed: {_allowed(HAVING_OPS)})")
+            if isinstance(h.value, bool) or not isinstance(h.value, (int, float)):
+                return _err(VALIDATION_ERROR, f"having value must be numeric: {h.value!r}")
+            if h.field not in aliases:
+                return _err(VALIDATION_ERROR,
+                            f"having references unknown aggregation alias: {h.field!r} "
+                            f"(declare it in aggregations[].as)")
 
     # 12. Capability gating (statically detectable).
     if body.joins and not capabilities.supports_join:

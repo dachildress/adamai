@@ -498,16 +498,17 @@ def main() -> None:
             f"Per-session skill denial (from --disable-skill): {sorted(cli_disabled)}"
         )
     skill_catalog = discover_skills(skills_cfg)
-    skill_manifest_block = build_skill_manifest_block(skill_catalog)
-    if skill_manifest_block:
-        # Union of allowed_callers across all enabled skills
-        skill_users: Set[str] = set()
-        for m in skill_catalog.list_enabled():
-            for caller in m.allowed_callers:
-                skill_users.add(caller)
-        for agent_name in skill_users:
-            if agent_name in primes:
-                primes[agent_name] = primes[agent_name] + "\n\n" + skill_manifest_block
+    # Caller-filtered advertisement: tell each agent ONLY about the executable
+    # skills its role is allowed to call (matching the runtime's allowed_callers
+    # enforcement), so it never emits a call the runtime would reject. Agents
+    # with no invocable skills get no skills section at all. This is the
+    # INITIATION half only — every actual call is still fully governed by the
+    # runtime (allowed_callers) and the skill handler (profile capability, source
+    # scope, denied_fields/aggregate-only, budgets).
+    for agent_name in primes:
+        block = build_skill_manifest_block(skill_catalog, agent_name)
+        if block:
+            primes[agent_name] = primes[agent_name] + "\n\n" + block
 
     searxng_url = os.environ.get("SEARXNG_URL", "http://localhost:8080").strip()
 

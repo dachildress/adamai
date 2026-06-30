@@ -179,6 +179,12 @@ def test_prompt_builder_content():
           "alias" in sp.lower() and "student_count" in sp)
     check("prompt requires non-empty projection / never ['*']",
           "['*']" in sp or "never project" in sp.lower() or "NEVER be ['*']" in sp)
+    # fix_having: HAVING (aggregate-threshold filtering) is taught.
+    check("prompt documents the having schema", '"having": [{"field","op","value"}]' in sp)
+    check("prompt lists having ops", "having[].op: eq, ne, lt, lte, gt, gte" in sp)
+    check("prompt explains having vs filters", "use 'having'" in sp and "AFTER grouping" in sp)
+    check("prompt has the aggregate-threshold worked example",
+          '"having":[{"field":"total_absences","op":"gt","value":5}]' in sp)
 
 
 def test_no_real_model_call():

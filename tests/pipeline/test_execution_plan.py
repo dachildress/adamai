@@ -138,6 +138,22 @@ def test_plan_id_runtime_context_invariant():
         check("ExecutionRequest is frozen", True)
 
 
+def test_having_roundtrip_and_canonical():
+    # fix_having: having parses, round-trips, and is part of the canonical form
+    # (omitted == []), so two logically equal plans get the same plan_id.
+    d = plan_dict()
+    d["body"]["having"] = [{"field": "avg_rate", "op": "gt", "value": 5}]
+    plan = ExecutionPlan.from_dict(d)
+    check("having parsed into a tuple of Having", isinstance(plan.body.having, tuple) and len(plan.body.having) == 1)
+    h = plan.body.having[0]
+    check("having fields parsed", h.field == "avg_rate" and h.op == "gt" and h.value == 5)
+    check("having in canonical to_dict", plan.body.to_dict()["having"] == [{"field": "avg_rate", "op": "gt", "value": 5}])
+    # Canonical: a plan with having omitted normalizes to having: [].
+    plain = ExecutionPlan.from_dict(plan_dict())
+    check("omitted having canonicalizes to []", plain.body.to_dict()["having"] == [])
+    check("having changes plan_id (logical change)", plan.plan_id != plain.plan_id)
+
+
 def main():
     print("Phase 1: ExecutionPlan + plan_id")
     print("=" * 60)
@@ -147,6 +163,7 @@ def main():
         test_plan_id_key_order_independent,
         test_plan_id_changes_with_logical_change,
         test_plan_id_runtime_context_invariant,
+        test_having_roundtrip_and_canonical,
     ]:
         print(f"\n{t.__name__}:")
         t()

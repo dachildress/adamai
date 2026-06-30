@@ -316,6 +316,28 @@ def test_disconnected_plan_raises_translation_error():
         check("disconnected plan -> TranslationError (no cross join)", True, str(e))
 
 
+def test_having_emits_bound_clause():
+    # fix_having: HAVING filters an aggregation alias, slotted between GROUP BY
+    # and ORDER BY, with the threshold bound as a parameter (never inlined).
+    tq = adapter().translate(plan(
+        entities=["students", "attendance"], projection=["students.id", "students.name"],
+        joins=[{"left": "students.id", "right": "attendance.student_id", "type": "inner"}],
+        filters=[], group_by=["students.id", "students.name"],
+        aggregations=[{"fn": "count", "field": "attendance.id", "as": "total_absences"}],
+        having=[{"field": "total_absences", "op": "gt", "value": 5}],
+        order_by=[{"field": "total_absences", "direction": "desc"}]))
+    check("HAVING references the alias (backtick-quoted)", "HAVING `total_absences` > %s" in tq.sql, tq.sql)
+    check("threshold is a bound parameter, not inlined", "5" not in tq.sql and 5 in tq.params, tq.sql)
+    check("HAVING sits between GROUP BY and ORDER BY",
+          tq.sql.index("GROUP BY") < tq.sql.index("HAVING") < tq.sql.index("ORDER BY"), tq.sql)
+    check("ORDER BY uses the same alias", "ORDER BY `total_absences` DESC" in tq.sql, tq.sql)
+
+
+def test_no_having_no_clause():
+    tq = adapter().translate(plan())  # base plan has no having
+    check("no HAVING clause when body.having empty", "HAVING" not in tq.sql, tq.sql)
+
+
 def test_normal_two_table_join_unchanged():
     # No regression: the canonical attendance<-schools join still emits each once.
     tq = adapter().translate(plan())
@@ -342,6 +364,8 @@ def main():
         test_no_duplicate_table_when_base_is_join_target,
         test_redundant_join_predicate_routed_to_where,
         test_disconnected_plan_raises_translation_error,
+        test_having_emits_bound_clause,
+        test_no_having_no_clause,
         test_normal_two_table_join_unchanged,
         test_integration_optin,
     ]:
