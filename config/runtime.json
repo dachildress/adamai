@@ -49,5 +49,11 @@
     "enabled": true,
     "max_operator_continuations": 4,
     "hard_cap": 10
+  },
+  "data_intelligence": {
+    "plan_max_tokens": 1024,
+    "interp_max_tokens": 4096,
+    "plan_temperature": 0.0,
+    "interp_temperature": 0.2
   }
 }

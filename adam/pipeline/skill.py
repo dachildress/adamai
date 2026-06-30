@@ -28,6 +28,7 @@ model-free.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
@@ -173,11 +174,29 @@ def build_system_prompt(source_model: SourceModel) -> str:
 # Untrusted-output parsing
 # ---------------------------------------------------------------------------
 
+# A single leading+trailing markdown code fence wrapping the whole payload,
+# e.g. ```json\n{...}\n``` . Models emit this despite instructions; strip it so
+# a fenced-but-complete object is never missed (balanced-brace extraction below
+# is the fallback for fences that don't wrap the whole string).
+_CODE_FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9_-]*\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL)
+
+
+def _strip_code_fences(text: str) -> str:
+    """If the whole string is wrapped in one markdown code fence, return its
+    inner content; otherwise return the text unchanged. Never raises."""
+    if not isinstance(text, str):
+        return text
+    m = _CODE_FENCE_RE.match(text.strip())
+    return m.group(1) if m else text
+
+
 def _extract_json_objects(text: str) -> List[Dict[str, Any]]:
     """Extract all TOP-LEVEL balanced {...} objects that parse as JSON dicts,
-    ignoring surrounding prose / markdown fences. Brace matching respects
-    string literals so braces inside string values don't confuse it. Nested
-    objects are part of their parent, not counted separately."""
+    ignoring surrounding prose / markdown fences. A whole-string code fence is
+    stripped first (explicit), then balanced-brace matching respects string
+    literals so braces inside string values don't confuse it. Nested objects are
+    part of their parent, not counted separately."""
+    text = _strip_code_fences(text)
     objs: List[Dict[str, Any]] = []
     i, n = 0, len(text)
     while i < n:
@@ -446,6 +465,20 @@ def _as_str_list(value: Any) -> List[str]:
     return []
 
 
+def _log_interp_parse_failure(raw: Any) -> None:
+    """Surface WHY interpretation didn't parse: log the raw output length and
+    its head/tail so the operator can tell 'truncated' (ends without a closing
+    brace → budget too small) from 'prose / no JSON'. No fabrication, no silent
+    opacity. The interpretation output carries no credentials (observations +
+    model judgment only)."""
+    import logging
+    s = raw if isinstance(raw, str) else repr(raw)
+    logging.getLogger("adam.data_sources").error(
+        "interpretation output unparseable: len=%d head=%r tail=%r",
+        len(s), s[:200], s[-200:],
+    )
+
+
 def _interpret(objective, data_analyzed, observations, lineage, model_fn):
     """Call the interpretation model with observations + metadata + lineage
     (NOT rows). Returns (interpretation_dict, error_or_None). Untrusted-output
@@ -463,6 +496,7 @@ def _interpret(objective, data_analyzed, observations, lineage, model_fn):
     raw = model_fn(system, payload)
     objs = _extract_json_objects(raw)
     if len(objs) == 0:
+        _log_interp_parse_failure(raw)
         return None, "no JSON object in interpretation output"
     if len(objs) > 1:
         return None, "multiple JSON objects in interpretation output"
