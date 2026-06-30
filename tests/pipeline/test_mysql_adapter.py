@@ -16,12 +16,22 @@ from pathlib import Path
 PROJ_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJ_ROOT))
 
+import re  # noqa: E402
+
 from adam.pipeline import (  # noqa: E402
     SYNTHETIC_SCHOOL_V1, ExecutionPlan, run_plan,
     Adapter, MySQLAdapter, MYSQL_CAPABILITIES, AdapterCostEstimate,
     TranslatedQuery, IdentifierResolutionError,
     AUTHENTICATION_FAILED, OFFLINE, ADAPTER_UNAVAILABLE,
 )
+from adam.pipeline.mysql_adapter import TranslationError  # noqa: E402
+
+
+def _table_intros(sql, table):
+    """Count how many times a physical table is introduced in FROM/JOIN
+    (a column ref `t`.`c` is never matched: it has no FROM/JOIN prefix and is
+    followed by a dot)."""
+    return len(re.findall(rf"(?:FROM|JOIN) `{table}`(?![.`])", sql))
 
 PASSED = 0
 FAILED = 0
@@ -260,6 +270,60 @@ def test_integration_optin():
           res.result and sqlite_res.result and res.result.columns == sqlite_res.result.columns)
 
 
+def test_no_duplicate_table_when_base_is_join_target():
+    # fix_alias3: a join whose RIGHT entity == entities[0] must not emit the base
+    # table twice (the old code did FROM schools JOIN schools -> MySQL 1066).
+    tq = adapter().translate(plan(
+        entities=["schools", "attendance"], projection=["schools.name"],
+        joins=[{"left": "attendance.school_id", "right": "schools.id", "type": "inner"}],
+        group_by=["schools.name"], filters=[],
+        aggregations=[{"fn": "count", "field": "attendance.id", "as": "n"}],
+        order_by=[]))
+    check("base table introduced exactly once", _table_intros(tq.sql, "schools") == 1, tq.sql)
+    check("join target introduced exactly once", _table_intros(tq.sql, "attendance") == 1, tq.sql)
+
+
+def test_redundant_join_predicate_routed_to_where():
+    # fix_alias3 tightening #1: a second join between already-emitted tables must
+    # NOT re-add a table; its equality is moved to WHERE (built via _q_col).
+    tq = adapter().translate(plan(
+        entities=["students", "schools"], projection=["schools.name"],
+        joins=[
+            {"left": "students.school_id", "right": "schools.id", "type": "inner"},
+            {"left": "schools.id", "right": "students.school_id", "type": "inner"},
+        ],
+        group_by=["schools.name"], filters=[],
+        aggregations=[{"fn": "count", "field": "students.id", "as": "n"}],
+        order_by=[]))
+    check("schools introduced exactly once", _table_intros(tq.sql, "schools") == 1, tq.sql)
+    check("students introduced exactly once", _table_intros(tq.sql, "students") == 1, tq.sql)
+    check("redundant join predicate moved to WHERE",
+          "WHERE" in tq.sql and "`schools`.`id` = `students`.`school_id`" in tq.sql, tq.sql)
+    check("moved predicate adds no params", tq.params == [], str(tq.params))
+
+
+def test_disconnected_plan_raises_translation_error():
+    # fix_alias3: a declared entity not connected by any join is malformed -> no
+    # silent cross join.
+    try:
+        adapter().translate(plan(
+            entities=["schools", "students"], projection=["schools.name"],
+            joins=[], group_by=["schools.name"], filters=[],
+            aggregations=[{"fn": "count", "field": "students.id", "as": "n"}],
+            order_by=[]))
+        check("disconnected plan raises", False, "no error")
+    except TranslationError as e:
+        check("disconnected plan -> TranslationError (no cross join)", True, str(e))
+
+
+def test_normal_two_table_join_unchanged():
+    # No regression: the canonical attendance<-schools join still emits each once.
+    tq = adapter().translate(plan())
+    check("attendance once", _table_intros(tq.sql, "attendance") == 1, tq.sql)
+    check("schools once", _table_intros(tq.sql, "schools") == 1, tq.sql)
+    check("single JOIN keyword", tq.sql.count(" JOIN ") == 1, tq.sql)
+
+
 def main():
     print("Slice 7: MySQLAdapter (Tier 1 fakes + Tier 2 opt-in)")
     print("=" * 60)
@@ -275,6 +339,10 @@ def main():
         test_is_adapter_no_base_class,
         test_runner_end_to_end_with_fake_conn,
         test_dialect_stays_private,
+        test_no_duplicate_table_when_base_is_join_target,
+        test_redundant_join_predicate_routed_to_where,
+        test_disconnected_plan_raises_translation_error,
+        test_normal_two_table_join_unchanged,
         test_integration_optin,
     ]:
         print(f"\n{t.__name__}:")

@@ -273,16 +273,58 @@ class MySQLAdapter(Adapter):
         if not select_parts:
             raise TranslationError("empty SELECT list after translation")
 
+        # FROM/JOIN: emit every entity EXACTLY ONCE. Tables are not aliased and
+        # columns are qualified as `entity`.`col`, so referencing the same
+        # physical table twice (base == a join target, or two joins sharing a
+        # right entity) would produce MySQL error 1066 ("Not unique table/alias").
+        # We dedup: start at entities[0], then for each join add only the side
+        # that introduces a NOT-yet-emitted entity. A join whose BOTH sides are
+        # already emitted is a redundant equality predicate -> routed to WHERE
+        # (built with the same _q_col resolution, never raw model strings). A
+        # join whose connecting table isn't present yet is deferred; if no join
+        # can make progress and entities remain unconnected, the plan is
+        # malformed -> TranslationError (never a silent cross join).
+        emitted = {entities[0]}
         from_sql = f"FROM {self._q_table(entities[0])}"
-        for j in body.joins:
-            right_entity = j.right.split(".")[0]
-            join_kw = _JOIN_SQL.get(j.type)
-            if join_kw is None:
-                raise TranslationError(f"unsupported join type: {j.type!r}")
-            on = f"{self._q_col(j.left, entities)} = {self._q_col(j.right, entities)}"
-            from_sql += f" {join_kw} {self._q_table(right_entity)} ON {on}"
+        extra_join_predicates: List[str] = []
+        remaining = list(body.joins)
+        progressed = True
+        while remaining and progressed:
+            progressed = False
+            deferred: List[Any] = []
+            for j in remaining:
+                join_kw = _JOIN_SQL.get(j.type)
+                if join_kw is None:
+                    raise TranslationError(f"unsupported join type: {j.type!r}")
+                left_entity = j.left.split(".")[0]
+                right_entity = j.right.split(".")[0]
+                on = f"{self._q_col(j.left, entities)} = {self._q_col(j.right, entities)}"
+                left_in, right_in = left_entity in emitted, right_entity in emitted
+                if left_in and right_in:
+                    # Both tables already joined: keep the equality as a WHERE
+                    # predicate (safe — resolved via _q_col), do not re-add a table.
+                    extra_join_predicates.append(on)
+                    progressed = True
+                elif left_in and not right_in:
+                    from_sql += f" {join_kw} {self._q_table(right_entity)} ON {on}"
+                    emitted.add(right_entity)
+                    progressed = True
+                elif right_in and not left_in:
+                    from_sql += f" {join_kw} {self._q_table(left_entity)} ON {on}"
+                    emitted.add(left_entity)
+                    progressed = True
+                else:
+                    deferred.append(j)  # neither side present yet -> retry next pass
+            remaining = deferred
+        if remaining:
+            raise TranslationError(
+                "malformed plan: joins do not connect all entities (disconnected)")
+        unconnected = [e for e in entities if e not in emitted]
+        if unconnected:
+            raise TranslationError(
+                f"malformed plan: entities not connected by any join: {unconnected!r}")
 
-        where_parts: List[str] = []
+        where_parts: List[str] = list(extra_join_predicates)
         for f in body.filters:
             col = self._q_col(f.field, entities)
             op = f.op
