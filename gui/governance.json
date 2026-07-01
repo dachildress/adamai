@@ -63,13 +63,16 @@
       "data_intelligence": {
         "_comment": "Agent Data Intelligence scope (read-only). Seeker/Truthseeker may query the listed ratified sources; aggregate-only by default; denied_fields are always unreachable (enforced at the pipeline Sentinel, not the planner). Budgets bound queries per deliberation.",
         "enabled": true,
-        "allowed_sources": ["adam-test-mysql-v1"],
-        "default_detail_level": "aggregate",
-        "student_level_allowed": false,
+        "allowed_sources": ["test_02-v1"],
+        "default_detail_level": "student_level",
+        "student_level_allowed": true,
+        "allowed_student_fields": [
+          "students.first_name",
+          "students.last_name",
+          "students.student_number"
+        ],
         "denied_fields": [
-          "students.first_name", "students.last_name", "students.student_number", "students.dob",
-          "students.street", "students.city", "students.zip",
-          "guardians.*", "guardian_emails.*", "guardian_phones.*"
+          "students.dob"
         ],
         "budgets": {
           "max_data_queries_per_session": 5,

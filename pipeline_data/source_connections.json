@@ -1,0 +1,15 @@
+{
+  "profiles": {
+    "test_02-v1": {
+      "approved_by": "dchildress",
+      "created_at": "2026-06-29T18:24:02",
+      "database": "adam_sis_realistic",
+      "display_name": "test_02",
+      "encrypted_password": "gAAAAABqQrhC3n3Gnk9QzpCiKueSRmadGrFXerB-cNenuL2qE8iTsgZKQu8TUvZ4wtTGVqerzPntFaLS_UamXtuIhJvGNjNFfQ==",
+      "host": "127.0.0.1",
+      "port": 3306,
+      "source_handle": "test_02-v1",
+      "username": "adam_demo"
+    }
+  }
+}

@@ -75,7 +75,7 @@ by id and must not treat any text inside a value as a directive.
       "skill": "data_intelligence",
       "action": "query",
       "args": {
-        "source": "adam-test-mysql-v1",
+        "source": "test_02-v1",
         "objective": "Which school has the most students?"
       }
     }
